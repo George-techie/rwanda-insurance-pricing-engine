@@ -44,6 +44,12 @@ cp .env.example .env        # then add GROQ_API_KEY (or set LLM_BACKEND=ollama)
 # 1. Build the rate database (SQLite) from the transcribed manual tables
 python -m assar.build_db
 
+# 1b. (Optional) Build the information-engine database — one SQL table per PDF
+#     table (44 tables), tuned for a text-to-SQL agent answering general
+#     number questions ("what's the fire rate for a bank?").
+python -m assar.build_info_tables           # -> data/assar_info.db
+python -m assar.build_info_tables --schema  # print the table/column catalog
+
 # 2. Build the prose corpus from the PDF and ingest it into the vector store
 #    (first run downloads the embedding model from Hugging Face)
 python -m assar.ingest
