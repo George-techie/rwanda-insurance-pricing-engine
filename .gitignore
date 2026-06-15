@@ -1,6 +1,9 @@
 # --- Secrets & local config ------------------------------------------------
-.env                      # contains GROQ_API_KEY / HF_TOKEN — never commit
-.env.local
+# (Git does NOT support inline comments — patterns must be on their own line.)
+# contains GROQ_API_KEY / HF_TOKEN — never commit
+.env
+.env.*
+!.env.example
 
 # --- Python ----------------------------------------------------------------
 __pycache__/
