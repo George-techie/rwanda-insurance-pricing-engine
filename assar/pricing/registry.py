@@ -6,6 +6,8 @@ parameters and orchestrates.
 """
 from __future__ import annotations
 
+import re
+
 from .base import list_categories
 from .fire import quote_burglary, quote_consequential_loss, quote_fire
 from .products import (
@@ -123,6 +125,31 @@ TOOL_SCHEMAS = [
     },
 ]
 
+# Groq/Llama sometimes emit numeric args as JSON strings ("1000000"), which the
+# provider then rejects against a strict {"type":"number"} schema (400
+# tool_use_failed). Relax every numeric field to accept number OR string; we
+# coerce back to a real number in run_tool().
+for _t in TOOL_SCHEMAS:
+    for _p in _t["function"]["parameters"]["properties"].values():
+        if _p.get("type") in ("number", "integer"):
+            _p["type"] = [_p["type"], "string"]
+
+
+def _coerce_numbers(args: dict) -> dict:
+    """Turn numeric-looking strings ('1,000,000', '12') into real numbers."""
+    out = {}
+    for k, v in args.items():
+        if isinstance(v, str):
+            s = v.strip().replace(",", "").replace("_", "")
+            try:
+                out[k] = int(s) if re.fullmatch(r"-?\d+", s) else float(s)
+                continue
+            except ValueError:
+                pass
+        out[k] = v
+    return out
+
+
 # name in schema -> python callable
 DISPATCH = {
     "quote_fire": quote_fire,
@@ -146,7 +173,7 @@ def run_tool(name: str, args: dict) -> dict:
     if fn is None:
         return {"error": f"unknown tool '{name}'"}
     try:
-        return fn(**args).as_dict()
+        return fn(**_coerce_numbers(args)).as_dict()
     except Exception as exc:  # surfaced back to the LLM as a tool result
         return {"error": str(exc)}
 
