@@ -1,0 +1,36 @@
+# --- Secrets & local config ------------------------------------------------
+.env                      # contains GROQ_API_KEY / HF_TOKEN — never commit
+.env.local
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- Virtual environments --------------------------------------------------
+.venv/
+venv/
+env/
+
+# --- Generated vector store (rebuild with `python -m assar.ingest`) ---------
+data/chroma/
+
+# --- Scratch / exports -----------------------------------------------------
+*.xlsx
+data/*.csv
+
+# --- Source manual (third-party IP — add deliberately if you want rebuilds) -
+# *.pdf
+
+# --- OS / editor -----------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# NOTE: data/assar.db and data/corpus.md ARE committed on purpose, so the repo
+# runs out of the box (Database + Get a Quote tabs work with no extra steps).
+# If you'd rather ship a "rebuild from source" repo, add them here and commit
+# the source PDF instead.

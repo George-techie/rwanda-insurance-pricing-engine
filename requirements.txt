@@ -1,0 +1,16 @@
+# Core app
+streamlit>=1.36
+python-dotenv>=1.0
+
+# Vector store + local embeddings (downloads the embedding model from HF on first run)
+chromadb>=0.5
+sentence-transformers>=3.0
+
+# LLM client (OpenAI-compatible: drives Groq / Ollama / HF)
+openai>=1.40
+
+# PDF prose extraction (only needed to (re)build the corpus)
+pdfplumber>=0.11
+
+# Tests
+pytest>=8.0
