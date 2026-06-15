@@ -57,16 +57,48 @@ class RateNotFound(Exception):
 # --------------------------------------------------------------------------- #
 # Low-level lookups
 # --------------------------------------------------------------------------- #
+def _closest_category(conn, scheme: str, category: str) -> str | None:
+    """Scheme-scoped fuzzy match: snap an approximate category to a valid key.
+
+    Lets an LLM (or user) pass 'hotel' and still resolve 'hotels_banks' under
+    pvt or 'hotels' under fire. Conservative: only within the SAME scheme, so it
+    cannot cross product families. Returns None if nothing is close enough.
+    """
+    import difflib
+
+    cats = [r["category"] for r in conn.execute(
+        "SELECT category FROM rate WHERE scheme=?", (scheme,))]
+    if not cats:
+        return None
+    q = category.strip().lower()
+    close = difflib.get_close_matches(q, cats, n=1, cutoff=0.6)
+    if close:
+        return close[0]
+    contains = [c for c in cats if q in c or c in q]
+    if contains:
+        return max(contains, key=lambda c: difflib.SequenceMatcher(None, q, c).ratio())
+    return None
+
+
 def get_rate(scheme: str, category: str, *, alt: bool = False, conn=None) -> tuple[float, str]:
     """Return (rate, unit) for a scheme/category. `alt` selects the second column."""
     own = conn is None
     conn = conn or connect()
     try:
         col = "rate_alt" if alt else "rate"
-        row = conn.execute(
-            f"SELECT {col} AS r, unit FROM rate WHERE scheme=? AND category=?",
-            (scheme, category),
-        ).fetchone()
+
+        def fetch(cat):
+            return conn.execute(
+                f"SELECT {col} AS r, unit FROM rate WHERE scheme=? AND category=?",
+                (scheme, cat),
+            ).fetchone()
+
+        row = fetch(category)
+        if row is None or row["r"] is None:
+            # Exact miss: try a scheme-scoped fuzzy match before giving up.
+            snapped = _closest_category(conn, scheme, category)
+            if snapped is not None:
+                row = fetch(snapped)
         if row is None or row["r"] is None:
             raise RateNotFound(f"No rate for scheme='{scheme}', category='{category}'"
                                f"{' (alt column)' if alt else ''}")
