@@ -250,4 +250,113 @@ before binding cover.
 
 ---
 
+## 9. Pricing Models for the Main Products (Get a Quote)
+
+Every premium on the Get a Quote tab is produced by a typed Python calculator
+that reads exact rates from SQLite; no language model is involved. The
+calculators share a common skeleton, then each product applies its own
+loadings, discounts, and floors as the manual specifies.
+
+```
+premium = sum_insured x rate            (rate /100 for percent, /1000 for per mille)
+        + loadings (e.g. industrial process load)
+        - discounts (FEA, voluntary deductible, security, clause/mode, stock)
+        x multipliers (first-loss, multi-trip, indemnity period, duration load)
+        x short-period factor            (fraction of annual premium)
+        floored at the class minimum premium
+        + policy fee (Rwf5,000, where the class charges one)
+        = final premium (net of taxes)
+```
+
+### Fire and Allied Perils
+
+The base rate is the occupancy rate from the fire grid: the standard-fire column
+(fire, lightning, explosion) or the fire-and-all-special-perils column. The fire
+portion is sum insured times that rate. Industrial risks add a 0.025 percent
+process loading plus a flat Rwf25,000 extensions loading, neither of which
+enjoys the FEA discount. A 15 percent Fire Extinguishing Appliances discount
+applies to the fire portion only. A voluntary deductible then earns a banded
+discount (capped at 33.33 percent of the excess amount). A short-period factor
+and the policy fee complete the premium. All fire material-damage cover is
+subject to the Condition of Average.
+
+### Public, Employers, Product, and Professional Liability
+
+Premium is the selected limit of indemnity times the occupation rate, adjusted
+by a short-period factor and floored at the class minimum premium (Rwf100,000
+for public, employers, and product; Rwf200,000 for professional indemnity, or
+Rwf25,000 for insurance agents). Professional indemnity carries a 5 percent
+mandatory excess (minimum Rwf200,000).
+
+### Goods in Transit and Transporters Liability
+
+The base rate comes from the commodity grid, selected by cover type (all-risks
+or road-accident-only) and whether the cargo is containerized. Transporters
+liability outside Rwanda loads the rate by 30 percent. For multiple trips the
+annual premium is scaled by trip period (30 percent up to 3 months, 60 percent
+up to 6, 90 percent up to 9, 100 percent up to 12). A policy fee is added.
+
+### Marine Cargo
+
+The base is the Institute Cargo Clause A rate for the commodity and packing. A
+transit-mode discount is applied first (road minus 10 percent, sea minus 20
+percent, air minus 30 percent, combined none), then a clause discount (Clause B
+minus 25 percent, Clause C minus 35 percent, Clause A none). A policy fee is
+added.
+
+### Personal Accident and Group Personal Accident
+
+Each benefit is priced off the class base rate: death and total permanent
+disability at the base rate, total temporary disability at 15 percent of it, and
+medical and funeral expenses at ten times it. The selected benefits are summed
+against the capital sum, a short-period factor is applied, and the result is
+floored at the minimum premium (PA Rwf25,000, or Rwf15,000 for an interning
+student; GPA Rwf50,000, or Rwf30,000 for a student).
+
+### Bonds and Guarantees
+
+Premium is the bond value times the bond-type rate. Providing 100 percent cash
+collateral reduces the rate to 3 percent. The premium is floored at Rwf10,000
+for a bid bond and Rwf30,000 for other bonds. Bonds carry the full annual rate
+for any period: no short-period or pro-rata reduction applies.
+
+### Political Violence and Terrorism (PVT)
+
+PVT rates are quoted per mille, not percent, so the premium is sum insured times
+the rate divided by one thousand. Approved security features can earn a discount
+of up to 10 percent. The mandatory deductible is 5 percent of each loss, minimum
+0.5 percent of the sum insured, with a floor of Rwf50,000.
+
+### Engineering: Contractors All Risks and Erection All Risks
+
+Premium is the contract value times the project-type rate. Projects running
+beyond twelve months are loaded by 25 percent for each additional six-month
+block. Third-party liability is included while its limit stays within 15 percent
+of the contract value; above that it is rated separately at 0.2 percent. A
+policy fee is added.
+
+### Machinery Breakdown
+
+Premium is the sum insured times the machine or industry rate, plus a policy
+fee. The mandatory excess is 10 percent of each loss (minimum Rwf500,000) for
+sums insured above Rwf5,000,000, otherwise 5 percent (minimum Rwf250,000).
+
+### Contractors Plant and Machinery (CPM)
+
+The rate is read from the hazard-class by plant-group matrix: plant groups are
+cranes (1), mobile plant (2), and non-mobile plant (3); hazard classes A, B, and
+C reflect terrain and exposure. A CPM-specific short-period scale and a policy
+fee apply. The mandatory excess is 10 percent of claim, minimum Rwf500,000.
+
+### Burglary and Theft
+
+The full-value rate is 0.3 percent for ordinary goods and 0.5 percent for
+high-value goods. On a first-loss basis a multiplier from the first-loss
+schedule is applied according to the ratio of first-loss sum insured to full
+value. A stock-declaration basis earns a 10 percent discount. A short-period
+factor and policy fee apply; the mandatory excess is 10 percent of each loss,
+minimum Rwf50,000.
+
+---
+
 End of report.
