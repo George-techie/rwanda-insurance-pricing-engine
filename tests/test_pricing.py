@@ -13,11 +13,55 @@ from assar.pricing.base import (
 )
 from assar.pricing.fire import quote_burglary, quote_consequential_loss, quote_fire
 from assar.pricing.products import (
-    quote_bond, quote_car_ear, quote_cpm, quote_liability, quote_machinery,
-    quote_pa_gpa, quote_pvt,
+    quote_aviation, quote_bbb, quote_bond, quote_boiler, quote_car_ear, quote_cpm,
+    quote_do_liability, quote_eear, quote_fidelity, quote_liability, quote_machinery,
+    quote_marine_hull, quote_pa_gpa, quote_plate_glass, quote_pvt,
+    quote_school_liability,
 )
 from assar.pricing.transit import quote_git, quote_marine_cargo
 from assar.pricing.registry import run_tool
+
+
+# --------------------------------------------------------------------------- #
+# Specialty classes added later (fidelity, BBB, D&O, school, aviation, marine
+# hull, boiler, EEAR, plate glass). Expected values hand-computed from the manual.
+# --------------------------------------------------------------------------- #
+def test_fidelity():
+    assert approx(quote_fidelity("financial_services", 100_000_000).final_premium, 4_500_000)
+    # Below the minimum premium floor
+    assert approx(quote_fidelity("other_offices", 1_000_000).final_premium, 200_000)
+
+
+def test_bbb_and_do():
+    assert approx(quote_bbb(100_000_000).final_premium, 5_000_000)
+    assert approx(quote_do_liability(100_000_000, risk="other_offices").final_premium, 2_500_000)
+
+
+def test_school_liability():
+    assert approx(quote_school_liability("university", 100).final_premium, 200_000)
+    assert approx(quote_school_liability("nursery_primary", 50).final_premium, 15_000)
+
+
+def test_aviation():
+    assert approx(quote_aviation("hull_all_risks", 1_000_000_000).final_premium, 1_505_000)
+    # PAX: 0.185% of per-seat limit x seats, + policy fee
+    assert approx(quote_aviation("pax_liability_per_seat", 5_000_000, seats=50).final_premium,
+                  5_000_000 * 0.185 / 100 * 50 + 5_000)
+
+
+def test_marine_hull_boiler_eear_plate_glass():
+    assert approx(quote_marine_hull(500_000_000).final_premium, 4_005_000)
+    assert approx(quote_boiler(10_000_000).final_premium, 55_000)
+    assert approx(quote_eear(10_000_000, location="portable").final_premium, 205_000)
+    assert approx(quote_plate_glass(5_000_000).final_premium, 105_000)
+
+
+def test_new_tools_dispatch():
+    # All specialty calculators are reachable as LLM tools and coerce string args.
+    r = run_tool("quote_plate_glass", {"sum_insured": "5000000"})
+    assert approx(r["final_premium"], 105_000)
+    r = run_tool("quote_school_liability", {"school_category": "university", "num_students": "100"})
+    assert approx(r["final_premium"], 200_000)
 
 
 def approx(a, b, tol=0.01):

@@ -33,6 +33,8 @@ invent a rate.
 Rules:
 - For any premium calculation, CALL a pricing tool. Never do the arithmetic \
 yourself and never invent a rate — the tools read exact rates from the manual.
+- Call tools ONLY by their exact provided names (e.g. quote_fidelity, \
+quote_marine_hull). Never invent or rename a tool.
 - Pass numeric arguments as numbers (e.g. 1000000), not strings.
 - PVT (Political Violence & Terrorism) rates are quoted PER MILLE, every other \
 class is percent. The tools already handle this; never override it.

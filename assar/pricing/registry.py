@@ -12,8 +12,10 @@ import re
 from .base import list_categories
 from .fire import quote_burglary, quote_consequential_loss, quote_fire
 from .products import (
-    quote_bond, quote_car_ear, quote_cpm, quote_liability, quote_machinery,
-    quote_pa_gpa, quote_pvt,
+    quote_aviation, quote_bbb, quote_bond, quote_boiler, quote_car_ear, quote_cpm,
+    quote_do_liability, quote_eear, quote_fidelity, quote_liability, quote_machinery,
+    quote_marine_hull, quote_pa_gpa, quote_plate_glass, quote_pvt,
+    quote_school_liability,
 )
 from .transit import quote_git, quote_marine_cargo
 
@@ -267,6 +269,145 @@ TOOL_SCHEMAS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_fidelity",
+            "description": "Price Fidelity Guarantee (cover against staff fraud/dishonesty).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "risk": {"type": "string", "enum": ["financial_services",
+                             "distribution_sales_purchasing", "other_offices", "security_firms"]},
+                    "sum_insured": {"type": "number", "description": "Guarantee amount."},
+                    "blanket": {"type": "boolean", "description": "Blanket cover (Rwf30,000 per capita)."},
+                    "employees": {"type": "integer", "description": "Number of employees (blanket only)."},
+                    "period_months": {"type": "number"},
+                },
+                "required": ["risk", "sum_insured"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_bbb",
+            "description": "Price Bankers Blanket Bond for a financial institution.",
+            "parameters": {
+                "type": "object",
+                "properties": {"limit_of_indemnity": {"type": "number"}},
+                "required": ["limit_of_indemnity"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_do_liability",
+            "description": "Price Directors & Officers liability on a selected limit.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit_of_indemnity": {"type": "number"},
+                    "risk": {"type": "string", "enum": ["financial_services", "other_offices"]},
+                },
+                "required": ["limit_of_indemnity"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_school_liability",
+            "description": "Price School Liability (flat premium per student, annual).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "school_category": {"type": "string", "enum": ["nursery_primary",
+                                        "secondary_non_technical", "secondary_technical", "university"]},
+                    "num_students": {"type": "integer"},
+                    "period_months": {"type": "number"},
+                },
+                "required": ["school_category", "num_students"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_aviation",
+            "description": "Price an aviation risk class (hull, cargo, liabilities, passenger).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "risk_class": {"type": "string", "enum": ["hull_all_risks", "cargo_low",
+                                   "cargo_high", "airport_operators_liability",
+                                   "hanger_keeper_liability", "pax_liability_per_seat"]},
+                    "sum_insured": {"type": "number", "description": "Hull value or selected limit (per-seat limit for PAX)."},
+                    "seats": {"type": "integer", "description": "Number of seats (PAX liability only)."},
+                },
+                "required": ["risk_class", "sum_insured"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_marine_hull",
+            "description": "Price Marine Hull (hull all risks) or its third-party liability.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "vessel_value": {"type": "number"},
+                    "cover": {"type": "string", "enum": ["hull", "tpl"]},
+                },
+                "required": ["vessel_value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_boiler",
+            "description": "Price Boilers & Pressure Vessels (material damage or third-party liability).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sum_insured": {"type": "number"},
+                    "cover": {"type": "string", "enum": ["material_damage", "third_party_liability"]},
+                },
+                "required": ["sum_insured"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_eear",
+            "description": "Price Computer / Electronic Equipment All Risks (EEAR).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sum_insured": {"type": "number"},
+                    "location": {"type": "string", "enum": ["premises", "portable", "unspecified", "increased_cost"],
+                                 "description": "premises=at insured's premises; portable=away; unspecified=tender; increased_cost=data reconstruction."},
+                },
+                "required": ["sum_insured"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_plate_glass",
+            "description": "Price Plate Glass insurance.",
+            "parameters": {
+                "type": "object",
+                "properties": {"sum_insured": {"type": "number"}},
+                "required": ["sum_insured"],
+            },
+        },
+    },
 ]
 
 # Groq/Llama sometimes emit numeric args as JSON strings ("1000000"), which the
@@ -308,6 +449,15 @@ DISPATCH = {
     "quote_car_ear": quote_car_ear,
     "quote_machinery": quote_machinery,
     "quote_cpm": quote_cpm,
+    "quote_fidelity": quote_fidelity,
+    "quote_bbb": quote_bbb,
+    "quote_do_liability": quote_do_liability,
+    "quote_school_liability": quote_school_liability,
+    "quote_aviation": quote_aviation,
+    "quote_marine_hull": quote_marine_hull,
+    "quote_boiler": quote_boiler,
+    "quote_eear": quote_eear,
+    "quote_plate_glass": quote_plate_glass,
 }
 
 

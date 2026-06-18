@@ -310,3 +310,255 @@ def quote_cpm(
     finally:
         if own:
             conn.close()
+
+
+def _excess_note(product, conn, default_pct, default_min):
+    ep = product_rule(product, "excess_pct", default_pct, conn=conn)
+    em = product_rule(product, "excess_min", default_min, conn=conn)
+    return ep, em
+
+
+# --------------------------------------------------------------------------- #
+# Fidelity Guarantee
+# --------------------------------------------------------------------------- #
+def quote_fidelity(
+    risk: str,
+    sum_insured: float,
+    *,
+    blanket: bool = False,
+    employees: int = 0,
+    period_months: float | None = None,
+    conn=None,
+) -> Quote:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        q = Quote(product="fidelity", sum_insured=sum_insured)
+        rate, _ = get_rate("fidelity", risk, conn=conn)
+        q.rate = rate
+        if blanket:
+            per_capita = product_rule("fidelity", "blanket_per_capita", 30_000, conn=conn)
+            q.gross_premium = per_capita * max(int(employees), 0)
+            q.add(f"Blanket cover: Rwf{per_capita:,.0f} per capita x {int(employees)} "
+                  f"= {q.gross_premium:,.0f}")
+        else:
+            q.add(f"Fidelity rate '{risk}': {rate}% on {sum_insured:,.0f}")
+            q.gross_premium = premium_from_rate(sum_insured, rate)
+        q.net_premium = q.gross_premium * short_period_fraction(period_months, conn=conn)
+        minimum = product_rule("fidelity", "min_premium", 200_000, conn=conn)
+        q.final_premium = apply_minimum(q.net_premium, minimum, q)
+        ep, em = _excess_note("fidelity", conn, 10.0, 250_000)
+        q.excess = f"Rwf{em:,.0f} or {ep}% of adjusted claim, whichever is higher"
+        q.add(f"FINAL premium (net of taxes/fees) = {q.final_premium:,.0f}")
+        return q
+    finally:
+        if own:
+            conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Bankers Blanket Bond  /  Directors & Officers Liability
+# --------------------------------------------------------------------------- #
+def quote_bbb(limit_of_indemnity: float, *, conn=None) -> Quote:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        q = Quote(product="bbb", sum_insured=limit_of_indemnity)
+        rate, _ = get_rate("bbb", "financial_services", conn=conn)
+        q.rate = rate
+        q.add(f"Bankers Blanket Bond rate (financial services): {rate}% of selected limit")
+        q.gross_premium = premium_from_rate(limit_of_indemnity, rate)
+        q.net_premium = q.final_premium = q.gross_premium
+        ep, em = _excess_note("bbb", conn, 10.0, 250_000)
+        q.excess = f"Rwf{em:,.0f} or {ep}% of adjusted claim, whichever is higher"
+        q.add(f"FINAL premium (net of taxes/fees) = {q.final_premium:,.0f}")
+        return q
+    finally:
+        if own:
+            conn.close()
+
+
+def quote_do_liability(
+    limit_of_indemnity: float,
+    *,
+    risk: str = "financial_services",   # financial_services | other_offices
+    conn=None,
+) -> Quote:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        q = Quote(product="do_liability", sum_insured=limit_of_indemnity)
+        rate, _ = get_rate("do_liability", risk, conn=conn)
+        q.rate = rate
+        q.add(f"Directors & Officers rate '{risk}': {rate}% of selected limit")
+        q.gross_premium = premium_from_rate(limit_of_indemnity, rate)
+        q.net_premium = q.final_premium = q.gross_premium
+        ep, em = _excess_note("do_liability", conn, 10.0, 250_000)
+        q.excess = f"Rwf{em:,.0f} or {ep}% of adjusted claim, whichever is higher"
+        q.add(f"FINAL premium (net of taxes/fees) = {q.final_premium:,.0f}")
+        return q
+    finally:
+        if own:
+            conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# School Liability — flat premium per student (annual, incl. fees & VAT)
+# --------------------------------------------------------------------------- #
+def quote_school_liability(
+    school_category: str,
+    num_students: int,
+    *,
+    period_months: float | None = None,
+    conn=None,
+) -> Quote:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        q = Quote(product="school_liability", rate_unit="amount")
+        per_student, _ = get_rate("school_liability", school_category, conn=conn)
+        n = max(int(num_students), 0)
+        q.rate = per_student
+        gross = per_student * n
+        q.add(f"School liability '{school_category}': Rwf{per_student:,.0f}/student "
+              f"x {n} students = {gross:,.0f}")
+        q.gross_premium = gross
+        q.net_premium = gross * short_period_fraction(
+            period_months, schedule="short_period_school", conn=conn)
+        q.final_premium = q.net_premium
+        q.add("Premiums are annual and inclusive of policy fees and VAT.")
+        q.add(f"FINAL premium = {q.final_premium:,.0f}")
+        return q
+    finally:
+        if own:
+            conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Aviation
+# --------------------------------------------------------------------------- #
+def quote_aviation(
+    risk_class: str,
+    sum_insured: float,
+    *,
+    seats: int = 1,
+    conn=None,
+) -> Quote:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        q = Quote(product="aviation", sum_insured=sum_insured)
+        rate, _ = get_rate("aviation", risk_class, conn=conn)
+        q.rate = rate
+        prem = premium_from_rate(sum_insured, rate)
+        if "pax" in risk_class:
+            prem *= max(int(seats), 1)
+            q.add(f"PAX liability: {rate}% of per-seat limit x {int(seats)} seats")
+        else:
+            q.add(f"Aviation '{risk_class}': {rate}% on {sum_insured:,.0f}")
+        q.gross_premium = q.net_premium = prem
+        fee = policy_fee(conn=conn)
+        q.policy_fee = fee
+        q.final_premium = q.net_premium + fee
+        q.add(f"Policy fee = {fee:,.0f}; FINAL = {q.final_premium:,.0f}")
+        return q
+    finally:
+        if own:
+            conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Marine Hull  /  Boilers  /  Computer (EEAR)  /  Plate Glass
+# --------------------------------------------------------------------------- #
+def quote_marine_hull(vessel_value: float, *, cover: str = "hull", conn=None) -> Quote:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        cat = "third_party_liability" if cover in ("tpl", "liability", "third_party") \
+            else "hull_all_risks"
+        q = Quote(product="marine_hull", sum_insured=vessel_value)
+        rate, _ = get_rate("marine_hull", cat, conn=conn)
+        q.rate = rate
+        q.add(f"Marine hull '{cat}': {rate}% on {vessel_value:,.0f}")
+        q.gross_premium = q.net_premium = premium_from_rate(vessel_value, rate)
+        fee = policy_fee(conn=conn)
+        q.policy_fee = fee
+        q.final_premium = q.net_premium + fee
+        q.add(f"Policy fee = {fee:,.0f}; FINAL = {q.final_premium:,.0f}")
+        return q
+    finally:
+        if own:
+            conn.close()
+
+
+def quote_boiler(sum_insured: float, *, cover: str = "material_damage", conn=None) -> Quote:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        cat = "third_party_liability" if cover in ("tpl", "liability", "third_party") \
+            else "material_damage"
+        q = Quote(product="boiler", sum_insured=sum_insured)
+        rate, _ = get_rate("boiler", cat, conn=conn)
+        q.rate = rate
+        q.add(f"Boiler & pressure vessel '{cat}': {rate}% on {sum_insured:,.0f}")
+        q.gross_premium = q.net_premium = premium_from_rate(sum_insured, rate)
+        fee = policy_fee(conn=conn)
+        q.policy_fee = fee
+        q.final_premium = q.net_premium + fee
+        ep, em = _excess_note("boiler", conn, 10.0, 625_000)
+        q.excess = f"{ep}% of claim, min Rwf{em:,.0f}"
+        q.add(f"Policy fee = {fee:,.0f}; FINAL = {q.final_premium:,.0f}")
+        return q
+    finally:
+        if own:
+            conn.close()
+
+
+_EEAR_CAT = {
+    "premises": "equipment_at_premises", "portable": "portable_away_premises",
+    "unspecified": "unspecified_tender", "increased_cost": "increased_cost_of_working",
+    "icow": "increased_cost_of_working",
+}
+
+
+def quote_eear(sum_insured: float, *, location: str = "premises", conn=None) -> Quote:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        cat = _EEAR_CAT.get(location, "equipment_at_premises")
+        q = Quote(product="eear", sum_insured=sum_insured)
+        rate, _ = get_rate("eear", cat, conn=conn)
+        q.rate = rate
+        q.add(f"Computer/EEAR '{cat}': {rate}% on {sum_insured:,.0f}")
+        q.gross_premium = q.net_premium = premium_from_rate(sum_insured, rate)
+        fee = policy_fee(conn=conn)
+        q.policy_fee = fee
+        q.final_premium = q.net_premium + fee
+        ep, em = _excess_note("eear", conn, 10.0, 100_000)
+        q.excess = f"{ep}% of claim, min Rwf{em:,.0f}"
+        q.add(f"Policy fee = {fee:,.0f}; FINAL = {q.final_premium:,.0f}")
+        return q
+    finally:
+        if own:
+            conn.close()
+
+
+def quote_plate_glass(sum_insured: float, *, conn=None) -> Quote:
+    own = conn is None
+    conn = conn or connect()
+    try:
+        q = Quote(product="plate_glass", sum_insured=sum_insured)
+        rate, _ = get_rate("plate_glass", "standard", conn=conn)
+        q.rate = rate
+        q.add(f"Plate glass rate: {rate}% on {sum_insured:,.0f}")
+        q.gross_premium = q.net_premium = premium_from_rate(sum_insured, rate)
+        fee = policy_fee(conn=conn)
+        q.policy_fee = fee
+        q.final_premium = q.net_premium + fee
+        ep, em = _excess_note("plate_glass", conn, 5.0, 100_000)
+        q.excess = f"{ep}% each loss, min Rwf{em:,.0f}"
+        q.add(f"Policy fee = {fee:,.0f}; FINAL = {q.final_premium:,.0f}")
+        return q
+    finally:
+        if own:
+            conn.close()
