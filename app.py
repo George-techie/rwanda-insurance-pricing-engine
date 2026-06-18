@@ -200,7 +200,7 @@ def show_quote(q):
     cols[1].metric("Net premium", f"Rwf{q.net_premium:,.0f}")
     cols[2].metric("FINAL premium", f"Rwf{q.final_premium:,.0f}")
     st.markdown("**Breakdown**")
-    for line in q.lines:
+    for line in q.as_dict()["breakdown"]:
         st.text(line)
     if q.excess:
         st.info(f"Excess / deductible: {q.excess}")
