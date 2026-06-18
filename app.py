@@ -111,8 +111,7 @@ def render_details(tool_calls, retrieved):
     for tc in tool_calls or []:
         r = tc["result"]
         if "error" in r:
-            st.caption(f"({tc['name']}: {r['error']})")
-            continue
+            continue  # don't surface failed/spurious tool calls; the text answer stands
         c = st.columns(3)
         c[0].metric("Product", r.get("product", "-"))
         c[1].metric("Rate", f"{r.get('rate')} {r.get('rate_unit', '%')}")

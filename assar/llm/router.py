@@ -15,11 +15,32 @@ pricing demo works regardless of LLM availability.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 from ..pricing.registry import TOOL_SCHEMAS, run_tool
 from ..rag.retriever import get_retriever
 from .client import get_client
+
+# A quote needs a figure (sum insured / limit / value) or an explicit pricing
+# word. Coverage/definition questions have neither — for those we don't expose
+# the pricing tools at all, so a small model can't make a spurious tool call.
+_QUOTE_CUES = re.compile(
+    r"\b(rate|premium|cost|costs|how much|quote|price|pricing|charge|"
+    r"sum insured|insured value|limit of indemnity|per mille)\b|\d", re.I)
+_CONCEPT_CUES = re.compile(
+    r"\b(cover|covers|covered|coverage|exclud|exclusion|definition|define|"
+    r"mean|meaning|differ|difference|warrant|condition|what is|what are|"
+    r"explain|describe|tell me about|how does|included)\b", re.I)
+
+
+def _offer_tools(query: str) -> bool:
+    """True if the pricing tools should be exposed for this question."""
+    if _QUOTE_CUES.search(query):
+        return True
+    if _CONCEPT_CUES.search(query):
+        return False
+    return True
 
 SYSTEM_PROMPT = """You are a pricing assistant for the Rwandan insurance market, \
 grounded in ASSAR's Approved General Business Pricing Manual (Version 3).
@@ -31,7 +52,11 @@ say they are outside this manual's scope and do not call a pricing tool or \
 invent a rate.
 
 Rules:
-- For any premium calculation, CALL a pricing tool. Never do the arithmetic \
+- Call a pricing tool ONLY to compute a premium/quote/rate for a SPECIFIC risk \
+with a sum insured, limit, or value. For questions about what a cover \
+includes or excludes, definitions, conditions, warranties, or how a cover \
+works, answer ONLY from the manual excerpts and do NOT call any tool.
+- When you do compute a premium, CALL a pricing tool. Never do the arithmetic \
 yourself and never invent a rate — the tools read exact rates from the manual.
 - Call tools ONLY by their exact provided names (e.g. quote_fidelity, \
 quote_marine_hull). Never invent or rename a tool.
@@ -102,8 +127,9 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
         "content": f"Manual excerpts:\n{context}\n\nQuestion: {query}",
     })
 
+    tools = TOOL_SCHEMAS if _offer_tools(query) else None
     try:
-        msg = client.chat(messages, tools=TOOL_SCHEMAS, tool_choice="auto")
+        msg = client.chat(messages, tools=tools, tool_choice="auto")
     except Exception as exc:  # noqa: BLE001
         result.error = f"LLM call failed: {exc}"
         result.answer = (
