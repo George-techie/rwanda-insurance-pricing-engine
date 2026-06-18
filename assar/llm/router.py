@@ -59,7 +59,7 @@ def _format_context(chunks: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-def answer_query(query: str, k: int = 4) -> RouterResult:
+def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None = None) -> RouterResult:
     retriever = get_retriever()
     retrieved: list[dict] = []
     if retriever.available:
@@ -89,13 +89,16 @@ def answer_query(query: str, k: int = 4) -> RouterResult:
         return result
 
     context = _format_context(retrieved) if retrieved else "(no prose retrieved)"
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": f"Manual excerpts:\n{context}\n\nQuestion: {query}",
-        },
-    ]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Prior conversation turns (text only) so follow-ups keep context, e.g.
+    # "and for a hotel?" after a fire question. Cap to the last few turns.
+    for role, content in (history or [])[-6:]:
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    messages.append({
+        "role": "user",
+        "content": f"Manual excerpts:\n{context}\n\nQuestion: {query}",
+    })
 
     try:
         msg = client.chat(messages, tools=TOOL_SCHEMAS, tool_choice="auto")

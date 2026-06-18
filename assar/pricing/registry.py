@@ -6,6 +6,7 @@ parameters and orchestrates.
 """
 from __future__ import annotations
 
+import inspect
 import re
 
 from .base import list_categories
@@ -30,6 +31,23 @@ CALCULATORS = {
     "machinery": quote_machinery,
     "cpm": quote_cpm,
 }
+
+# Transit commodity taxonomy (shared by GIT and marine cargo tool schemas).
+_TRANSIT_COMMODITIES = [
+    "raw_agricultural_produce", "grains_in_bags", "nonfragile_not_pilferable",
+    "nonfragile_pilferable", "semi_fragile", "fragile", "chemical_in_drums",
+    "chemicals_cement_fertilizer_bags", "pharmaceuticals", "food_confectionery_cans",
+    "food_confectionery_bags", "bulk_petroleum", "bulk_grains_edible_oils",
+    "other_liquid_beers", "matches_fireworks_explosives", "copper_precious_metals",
+    "household_professionally_packed", "household_not_professionally_packed",
+]
+_COMMODITY_HINT = (
+    "Map the goods to the closest class: semi_fragile = electrical "
+    "appliances/electronics; fragile = glass/glassware/chinaware/wines; "
+    "nonfragile_pilferable = spare parts/batteries/tyres/cigarettes/paper; "
+    "nonfragile_not_pilferable = machinery/iron not prone to pilferage; "
+    "chemicals_cement_fertilizer_bags = cement/fertilizer in bags."
+)
 
 # Tool schemas (OpenAI/Groq function-calling format). The LLM picks one and
 # fills the args; we dispatch to CALCULATORS.
@@ -79,7 +97,8 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "commodity": {"type": "string"},
+                    "commodity": {"type": "string", "enum": _TRANSIT_COMMODITIES,
+                                  "description": _COMMODITY_HINT},
                     "consignment_value": {"type": "number"},
                     "cover": {"type": "string", "enum": ["all_risks", "road_accident"]},
                     "containerized": {"type": "boolean"},
@@ -120,6 +139,131 @@ TOOL_SCHEMAS = [
                     "cash_collateral_100": {"type": "boolean"},
                 },
                 "required": ["bond_type", "bond_value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_consequential_loss",
+            "description": "Price Consequential Loss / business interruption following fire. Basis is the fire material-damage rate for the risk.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "risk_category": {"type": "string", "description": "Fire occupancy key, e.g. 'hotels', 'banks'."},
+                    "gross_profit_si": {"type": "number", "description": "Sum insured (gross profit / wages)."},
+                    "indemnity_period_months": {"type": "integer"},
+                    "cover": {"type": "string", "enum": ["gross_profit", "auditors_fees", "wages"]},
+                    "period_months": {"type": "number"},
+                },
+                "required": ["risk_category", "gross_profit_si"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_burglary",
+            "description": "Price Burglary & Theft cover (full value, or first-loss if a ratio is given).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sum_insured": {"type": "number"},
+                    "high_value": {"type": "boolean", "description": "High-value goods such as precious metals."},
+                    "first_loss_ratio": {"type": "number", "description": "First-loss SI as a fraction of full value (0-1); omit for full value."},
+                    "stock_declaration": {"type": "boolean"},
+                    "period_months": {"type": "number"},
+                },
+                "required": ["sum_insured"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_marine_cargo",
+            "description": "Price Marine Cargo for a commodity (Institute Cargo Clause A/B/C, by transit mode).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "commodity": {"type": "string", "enum": _TRANSIT_COMMODITIES,
+                                  "description": _COMMODITY_HINT},
+                    "consignment_value": {"type": "number"},
+                    "containerized": {"type": "boolean"},
+                    "mode": {"type": "string", "enum": ["combined", "road", "air", "sea"]},
+                    "clause": {"type": "string", "enum": ["A", "B", "C"]},
+                },
+                "required": ["commodity", "consignment_value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_pa_gpa",
+            "description": "Price Personal Accident (PA) or Group Personal Accident (GPA) cover.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "risk_class": {"type": "string", "description": "Occupation class, e.g. 'construction_workers', 'office_administration', 'drivers_security_mining'."},
+                    "death_benefit": {"type": "number", "description": "Capital sum / death benefit."},
+                    "group": {"type": "boolean", "description": "Group PA (true) vs individual PA (false)."},
+                    "benefits": {"type": "array", "items": {"type": "string", "enum": ["death", "tpd", "ttd", "medical", "funeral"]}},
+                    "student": {"type": "boolean"},
+                    "period_months": {"type": "number"},
+                },
+                "required": ["risk_class", "death_benefit"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_car_ear",
+            "description": "Price Contractors All Risks (kind='car') or Erection All Risks (kind='ear') for a project.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["car", "ear"]},
+                    "project_type": {"type": "string", "description": "Project key, e.g. 'residential_buildings', 'bridges', 'dams', 'roads_urban'."},
+                    "contract_value": {"type": "number"},
+                    "duration_months": {"type": "integer"},
+                    "tpl_limit": {"type": "number", "description": "Third-party liability limit (0 = none)."},
+                },
+                "required": ["kind", "project_type", "contract_value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_machinery",
+            "description": "Price Machinery Breakdown for a machine / industry type.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "machine_type": {"type": "string", "description": "Machine/industry key, e.g. 'transformers', 'wood_working', 'metal_producing'."},
+                    "sum_insured": {"type": "number"},
+                    "period_months": {"type": "number"},
+                },
+                "required": ["machine_type", "sum_insured"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "quote_cpm",
+            "description": "Price Contractors Plant & Machinery (CPM) by plant group and hazard class.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plant_group": {"type": "string", "enum": ["1", "2", "3"], "description": "1=Cranes, 2=Mobile plant, 3=Non-mobile plant."},
+                    "hazard_class": {"type": "string", "enum": ["A", "B", "C"]},
+                    "sum_insured": {"type": "number"},
+                    "period_months": {"type": "number"},
+                },
+                "required": ["plant_group", "hazard_class", "sum_insured"],
             },
         },
     },
@@ -172,8 +316,14 @@ def run_tool(name: str, args: dict) -> dict:
     fn = DISPATCH.get(name)
     if fn is None:
         return {"error": f"unknown tool '{name}'"}
+    args = _coerce_numbers(args)
+    # Drop any arguments the calculator doesn't accept (the LLM occasionally
+    # invents a kwarg, e.g. passing 'cover' to a tool that has no such param).
+    params = inspect.signature(fn).parameters
+    if not any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        args = {k: v for k, v in args.items() if k in params}
     try:
-        return fn(**_coerce_numbers(args)).as_dict()
+        return fn(**args).as_dict()
     except Exception as exc:  # surfaced back to the LLM as a tool result
         return {"error": str(exc)}
 
