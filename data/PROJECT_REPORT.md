@@ -369,4 +369,107 @@ binding cover.
 
 ---
 
+## 10. Calculation Functions Reference
+
+This section explains every function in the pricing engine (assar/pricing/), so
+the project can be understood and maintained end to end. There are no hard-coded
+answers anywhere: each premium is computed from exact rates read from SQLite.
+
+### Shared building blocks (base.py)
+
+Every calculator is assembled from a few primitives.
+
+- Quote: the result object. It carries the product, sum insured, effective rate
+  and unit, gross/net/final premium, policy fee, excess, a list of
+  human-readable breakdown lines, and any warnings.
+- get_rate(scheme, category, alt): exact rate lookup from the rate table; on an
+  exact miss it falls back to a scheme-scoped fuzzy match (so "hotel" resolves
+  to a valid key). alt selects the second column, e.g. fire's all-perils rate.
+- premium_from_rate(sum_insured, rate, unit): the core multiply. Percent divides
+  by 100, per mille by 1000, and an "amount" unit returns the flat figure.
+- voluntary_deductible_discount(excess, gross): the banded discount for a chosen
+  excess, with the saving capped at 33.33 percent of the excess amount.
+- short_period_fraction(period, schedule): the fraction of the annual premium
+  for cover shorter than a year; 1.0 for a full year.
+- apply_minimum, product_rule, policy_fee: floor a premium at the class minimum,
+  read per-product constants (minimums, excesses, loadings), and the Rwf5,000
+  policy fee.
+
+### Fire family (fire.py)
+
+- quote_fire: base rate from the fire grid (standard fire or all-special-perils
+  column); adds the 0.025 percent industrial process load and Rwf25,000
+  extensions for industrial risks; applies the 15 percent FEA discount to the
+  fire portion only; applies the voluntary-deductible discount; short-period
+  factor; policy fee. Flags the Condition of Average.
+- quote_consequential_loss: uses the fire material-damage rate as the basis,
+  times the cover factor (gross profit 150, auditors 125, wages 100 percent),
+  times the indemnity-period multiplier; short period; policy fee; 14-day excess.
+- quote_burglary: full-value rate 0.3 percent ordinary or 0.5 percent
+  high-value; first-loss multiplier when a first-loss ratio is given; 10 percent
+  stock-declaration discount; short period; fee; excess 10 percent min Rwf50,000.
+
+### Liability, accident, engineering, specialty (products.py)
+
+- quote_liability: limit of indemnity times the occupation rate; short period;
+  minimum premium (100k; professional indemnity 200k, or 25k for agents);
+  professional indemnity carries a 5 percent excess.
+- quote_pa_gpa: prices each selected benefit off the class base rate (death and
+  TPD at base, TTD at 15 percent, medical and funeral at ten times base), sums
+  them against the capital sum; short period; PA/GPA minimums.
+- quote_bond: bond value times the bond-type rate; 100 percent cash collateral
+  reduces the rate to 3 percent; minimum (bid 10k, other 30k); full annual rate,
+  no short period.
+- quote_pvt: per-mille rate (divide by 1000); security-features discount up to
+  10 percent; mandatory deductible 5 percent, min 0.5 percent of SI, floor 50k.
+- quote_car_ear: contract value times project rate; plus 25 percent for each
+  extra six months beyond twelve; TPL included if within 15 percent of the
+  value, else rated separately at 0.2 percent; policy fee.
+- quote_machinery: sum insured times the machine/industry rate; policy fee;
+  excess tiered at the Rwf5,000,000 sum-insured threshold.
+- quote_cpm: rate from the hazard-class by plant-group matrix; CPM short-period
+  scale; policy fee; excess 10 percent min Rwf500,000.
+- quote_fidelity: sum insured times rate (or Rwf30,000 per employee for blanket
+  cover); short period; min 200k; excess Rwf250,000 or 10 percent.
+- quote_bbb: bankers blanket bond, limit times 5 percent; excess 250k or 10
+  percent.
+- quote_do_liability: directors and officers, limit times rate (financial
+  services 5 percent, other offices 2.5 percent); excess 250k or 10 percent.
+- quote_school_liability: flat premium per student times the number of students;
+  short period; inclusive of policy fees and VAT.
+- quote_aviation: sum insured times the class rate; for passenger cover,
+  multiplied by the number of seats; policy fee.
+- quote_marine_hull: hull all risks at 0.8 percent of vessel value, or
+  third-party liability at 0.25 percent; policy fee.
+- quote_boiler: material damage or third-party liability at 0.5 percent; policy
+  fee; excess 10 percent min Rwf625,000.
+- quote_eear: computer/electronic all risks, 0.75 percent at premises, 2 percent
+  portable away, 1.5 percent unspecified tender, 0.75 percent increased cost of
+  working; policy fee; excess 10 percent min Rwf100,000.
+- quote_plate_glass: sum insured times 2 percent; policy fee; excess 5 percent
+  min Rwf100,000.
+
+### Transit (transit.py)
+
+- _transit_rate (helper): selects the correct cell from the commodity grid
+  (road-accident vs all-risks, containerized vs not), with a fuzzy commodity
+  fallback; returns the rate and the excess text.
+- quote_git: Goods in Transit / Transporters Liability; base grid rate; plus 30
+  percent if transporters liability outside Rwanda; multi-trip scaling
+  (30/60/90/100 percent by period); policy fee.
+- quote_marine_cargo: ICC-A base rate; applies the transit-mode discount (road
+  10, sea 20, air 30 percent), then the clause discount (B 25, C 35 percent);
+  policy fee.
+
+### The dispatcher (registry.py)
+
+- run_tool(name, args): the single entry point the chat uses. It coerces
+  string numbers to real numbers, drops any argument a calculator does not
+  accept (so a stray model-generated argument cannot crash a quote), dispatches
+  to the right function, and returns the quote as a dictionary. Errors are
+  returned as data rather than raised. The same file defines the LLM tool
+  schemas that expose all 21 calculators to the chat.
+
+---
+
 End of report.
