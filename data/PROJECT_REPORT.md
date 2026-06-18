@@ -357,6 +357,16 @@ value. A stock-declaration basis earns a 10 percent discount. A short-period
 factor and policy fee apply; the mandatory excess is 10 percent of each loss,
 minimum Rwf50,000.
 
+### Source anchors for the pricing rules
+
+Each rule above is taken from a specific point in the manual; the page(s) are
+listed below so the methodology can be verified against the ASSAR document.
+This covers the pricing rules and loadings; the underlying rate values are
+spot-checked against the manual and should be confirmed cell by cell before
+binding cover.
+
+{{SECTION9_SOURCES}}
+
 ---
 
 End of report.

@@ -113,6 +113,38 @@ AUDIT = [
 ]
 
 
+# Source anchors for the Section 9 pricing rules: (rule, ASSAR page(s)).
+SECTION9_SOURCES = [
+    ("Fire: standard-fire vs fire+all-special-perils columns", "p.19-22"),
+    ("Fire: industrial +0.025% process load + flat Rwf25,000 extensions", "p.17"),
+    ("Fire: 15% FEA discount on fire/lightning/explosion only", "p.16"),
+    ("Voluntary-deductible saving capped at 33.33% of the excess amount", "p.13"),
+    ("Fire material damage subject to the Condition of Average", "p.18"),
+    ("Liability minimum premiums (100k; PI 200k; agents 25k); PI excess 5% min 200k", "p.47-50"),
+    ("Transporters +30% outside Rwanda; multi-trip 30/60/90/100% of annual", "p.38-41"),
+    ("Marine mode discount (road 10 / sea 20 / air 30); clause B 25, C 35", "p.69"),
+    ("PA/GPA: death=TPD; TTD 15%; medical & funeral 10x death; class minimums", "p.51-52"),
+    ("Bonds: 100% cash collateral -> 3%; min bid 10k / other 30k; no short period", "p.70-71"),
+    ("PVT per mille; security discount <=10%; deductible 5% min 0.5% of SI, floor 50k", "p.72-74"),
+    ("Engineering: +25% per extra 6 months; TPL <=15% included, else 0.2% separately", "p.55,63"),
+    ("Machinery excess 10% min 500k above 5M SI, else 5% min 250k", "p.56"),
+    ("CPM hazard-class x plant-group matrix; excess 10% of claim, min 500k", "p.57"),
+    ("Burglary 0.3%/0.5% full value; first-loss multipliers; stock declaration -10%", "p.28-29"),
+]
+
+
+def build_section9_sources() -> str:
+    c1 = 76
+    lines = ["```", f"{'PRICING RULE':<{c1}} ASSAR PAGE", f"{'-' * c1} {'-' * 10}"]
+    for rule, page in SECTION9_SOURCES:
+        wrapped = textwrap.wrap(rule, c1) or [""]
+        lines.append(f"{wrapped[0]:<{c1}} {page}")
+        for cont in wrapped[1:]:
+            lines.append(f"{cont:<{c1}}")
+    lines.append("```")
+    return "\n".join(lines)
+
+
 def build_audit_block() -> str:
     c1, c2 = 33, 11
     mw = 92 - c1 - c2 - 2
@@ -247,7 +279,9 @@ def build_pdf(pages) -> bytes:
 
 
 def main():
-    md = MD.read_text(encoding="utf-8").replace("{{AUDIT_TABLE}}", build_audit_block())
+    md = (MD.read_text(encoding="utf-8")
+          .replace("{{AUDIT_TABLE}}", build_audit_block())
+          .replace("{{SECTION9_SOURCES}}", build_section9_sources()))
     pages = layout(parse(md))
     OUT.write_bytes(build_pdf(pages))
     print(f"Wrote {OUT}  ({len(pages)} pages, {len(AUDIT)} audited tables, ~{len(md.split())} words)")
