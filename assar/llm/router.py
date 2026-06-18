@@ -60,9 +60,13 @@ works, answer ONLY from the manual excerpts and do NOT call any tool.
 yourself and never invent a rate — the tools read exact rates from the manual.
 - Call tools ONLY by their exact provided names (e.g. quote_fidelity, \
 quote_marine_hull). Never invent or rename a tool.
-- Never invent a sum insured, limit of indemnity, or value. If the user asks \
-for a rate, or asks for a premium without giving the amount, state the rate \
-and ask for the amount; do not assume one.
+- The value the user gives for the item, property, or risk IS the sum insured: \
+use that amount to compute the premium. Never invent a sum insured or limit. \
+Only if NO amount is given anywhere should you state the rate and ask for the \
+amount instead of computing.
+- Do NOT write page references such as (p.27) in your answer; the relevant \
+manual pages are shown to the user separately as sources.
+- Do not convert currencies; quote in the currency given (the manual is in RWF).
 - Pass numeric arguments as numbers (e.g. 1000000), not strings.
 - PVT (Political Violence & Terrorism) rates are quoted PER MILLE, every other \
 class is percent. The tools already handle this; never override it.
@@ -132,17 +136,20 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
         result.error = "llm_not_ready"
         return result
 
-    context = _format_context(retrieved) if retrieved else "(no prose retrieved)"
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     # Prior conversation turns (text only) so follow-ups keep context, e.g.
     # "and for a hotel?" after a fire question. Cap to the last few turns.
     for role, content in (history or [])[-6:]:
         if role in ("user", "assistant") and content:
             messages.append({"role": role, "content": content})
-    messages.append({
-        "role": "user",
-        "content": f"Manual excerpts:\n{context}\n\nQuestion: {query}",
-    })
+    if offer:
+        # Quote turn: the tool supplies the rate, so we don't feed prose (keeps
+        # the model from quoting page numbers inline or saying "no excerpts").
+        user_content = query
+    else:
+        context = _format_context(retrieved) if retrieved else "(no prose retrieved)"
+        user_content = f"Manual excerpts:\n{context}\n\nQuestion: {query}"
+    messages.append({"role": "user", "content": user_content})
 
     tools = TOOL_SCHEMAS if offer else None
     msg = None
@@ -224,6 +231,17 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
             result.answer = _render_quotes(result.tool_calls)
     else:
         result.answer = msg.content or ""
+
+    # For a quote turn the answer is citation-free; populate the Sources trace
+    # with the manual pages for the quoted product so the user can still verify.
+    if not result.retrieved and result.tool_calls and retriever.available:
+        prod = next((t["result"].get("product") for t in result.tool_calls
+                     if "error" not in t["result"]), None)
+        if prod:
+            try:
+                result.retrieved = retriever.search(prod.replace("_", " ") + " insurance", k=3)
+            except Exception:  # noqa: BLE001
+                pass
 
     return result
 
