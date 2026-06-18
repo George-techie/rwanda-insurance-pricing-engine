@@ -35,12 +35,34 @@ _CONCEPT_CUES = re.compile(
 
 
 def _offer_tools(query: str) -> bool:
-    """True if the pricing tools should be exposed for this question."""
-    if _QUOTE_CUES.search(query):
-        return True
-    if _CONCEPT_CUES.search(query):
-        return False
-    return True
+    """Offer the pricing tools only when there's a clear quote signal (a figure
+    or a pricing word). Everything else is treated as a concept question and
+    routed to retrieval, so bare follow-ups like "and co-insurance?" get grounded
+    in the manual instead of answered from the model's memory."""
+    return bool(_QUOTE_CUES.search(query))
+
+
+_PAGE_REF = re.compile(r"\s*\(\s*p\.?\s*\d[\d,\s/&.-]*\)")
+
+
+def _strip_page_refs(text: str) -> str:
+    """Remove inline page citations like (p.27); pages live in the Sources trace."""
+    return _PAGE_REF.sub("", text or "")
+
+
+# High-value valuables map to Burglary "High Valued Goods", not to computer or
+# plate-glass cover. The manual has no jewellery class, so the model sometimes
+# picks an absurd product for them; this backstop corrects the obvious misroutes.
+_VALUABLES = re.compile(
+    r"\b(diamond|diamonds|gold|jewel|jewell?ery|gemstone|gems?|precious|bullion|"
+    r"platinum|ruby|emerald|sapphire)\b", re.I)
+_TRANSIT_WORDS = re.compile(r"\b(transit|shipping|shipment|by road|by sea|by air|cargo)\b", re.I)
+# If the user explicitly names a cover, respect their choice and don't override.
+_COVER_NAMED = re.compile(
+    r"\b(fire|burglar|theft|transit|marine|cargo|fidelity|computer|electronic|eear|"
+    r"plate ?glass|liabilit|bond|guarantee|aviation|hull|boiler|machinery|engineering|"
+    r"erection|contractor|pvt|political|terrorism|consequential|business interruption|"
+    r"personal accident|gpa)\b", re.I)
 
 SYSTEM_PROMPT = """You are a pricing assistant for the Rwandan insurance market, \
 grounded in ASSAR's Approved General Business Pricing Manual (Version 3).
@@ -201,6 +223,34 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
             )
         messages.extend(tool_messages)
 
+        # Backstop: a diamond/gold/jewellery item is high-value burglary cover,
+        # not computer or plate-glass cover. If the model routed such an item to
+        # an absurd product (and it is not in transit), recompute as burglary
+        # high-value so the answer is sensible regardless of the model's pick.
+        first = result.tool_calls[0] if result.tool_calls else None
+        if (first and first["name"] != "quote_burglary"
+                and _VALUABLES.search(query) and not _TRANSIT_WORDS.search(query)
+                and not _COVER_NAMED.search(query)
+                and "error" not in first["result"]):
+            si = first["args"].get("sum_insured") or first["args"].get("consignment_value")
+            if si:
+                fixed = run_tool("quote_burglary", {"sum_insured": si, "high_value": True})
+                if "error" not in fixed:
+                    result.tool_calls = [{"name": "quote_burglary",
+                                          "args": {"sum_insured": si, "high_value": True},
+                                          "result": fixed}]
+                    result.answer = (
+                        f"High-value goods such as this are covered under Burglary & "
+                        f"Theft at {fixed['rate']}% of the value. On a sum insured of "
+                        f"Rwf{si:,.0f} the estimated premium is "
+                        f"Rwf{fixed['final_premium']:,.0f} (including the policy fee).")
+                    if retriever.available:
+                        try:
+                            result.retrieved = retriever.search("burglary and theft insurance", k=3)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    return result
+
         # Safeguard: if the user never supplied a figure, the tool's sum insured
         # was assumed by the model. Do not present a fabricated premium - return
         # the rate and ask for the value instead.
@@ -243,6 +293,7 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
             except Exception:  # noqa: BLE001
                 pass
 
+    result.answer = _strip_page_refs(result.answer)
     return result
 
 
