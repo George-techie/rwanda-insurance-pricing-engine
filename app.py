@@ -157,24 +157,22 @@ with tab_ask:
     if "chat" not in st.session_state:
         st.session_state.chat = []
 
-    # Replay the conversation so far
+    # Replay the whole conversation (newest at the bottom).
     for m in st.session_state.chat:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
             if m["role"] == "assistant":
                 render_details(m.get("tool_calls", []), m.get("retrieved", []))
 
-    prompt = st.chat_input("Ask about insurance pricing…")
-    if prompt:
-        st.session_state.chat.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+    # If the latest turn is a user message awaiting a reply, answer it here —
+    # below the history and above the input box.
+    if st.session_state.chat and st.session_state.chat[-1]["role"] == "user":
         from assar.llm.router import answer_query
         history = [(m["role"], m["content"]) for m in st.session_state.chat[:-1]
                    if m["role"] in ("user", "assistant")]
         with st.chat_message("assistant"):
             with st.spinner("Thinking…"):
-                res = answer_query(prompt, history=history)
+                res = answer_query(st.session_state.chat[-1]["content"], history=history)
             st.markdown(res.answer or "_(no answer)_")
             render_details(res.tool_calls, res.retrieved)
         st.session_state.chat.append({
@@ -184,6 +182,13 @@ with tab_ask:
 
     if st.session_state.chat and st.button("Clear conversation"):
         st.session_state.chat = []
+        st.rerun()
+
+    # Input stays pinned at the bottom; on submit, record the turn and rerun so
+    # it appears in the history above, with the input still below.
+    prompt = st.chat_input("Ask about insurance pricing…")
+    if prompt:
+        st.session_state.chat.append({"role": "user", "content": prompt})
         st.rerun()
 
 
