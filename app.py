@@ -28,6 +28,23 @@ from assar.db import connect, DB_PATH
 st.set_page_config(page_title="ASSAR Pricing Assistant", page_icon="📑", layout="wide")
 
 
+@st.cache_resource(show_spinner="Warming up the language model (first load, ~20s)…")
+def _warm_models():
+    """Load the local embedding model once at startup so the first chat message
+    isn't a silent wait. Cached for the life of the server process."""
+    try:
+        from assar.rag.retriever import get_retriever
+        r = get_retriever()
+        if r.available:
+            r.search("warm up", k=1)
+        return True
+    except Exception:
+        return False
+
+
+_warm_models()
+
+
 # --------------------------------------------------------------------------- #
 # Sidebar — status
 # --------------------------------------------------------------------------- #
