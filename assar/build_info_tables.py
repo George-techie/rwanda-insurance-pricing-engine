@@ -40,6 +40,10 @@ def _unit_for(table: str, col: str, ctype: str) -> tuple[str, str]:
         return "fraction", "Multiplier of the annual premium (e.g. 0.5 = 50%)"
     if col.endswith("_days"):
         return "days", "Number of days"
+    if col.endswith("_weeks"):
+        return "weeks", "Number of weeks"
+    if col.endswith("_months"):
+        return "months", "Number of months"
     if col == "value" and ctype.upper() in ("REAL", "INTEGER"):
         return "number", "Numeric value"
     return "—", "Text label / description"
@@ -467,6 +471,47 @@ MINIMUM_PREMIUMS = [
     ("Fidelity Guarantee", 200000, "Cover <= 12 months"),
 ]
 
+# Consequential Loss - Dual Basis Wages Cover matrix (page 26). For each
+# indemnity period (months) and initial period of 100% cover (weeks), the table
+# gives, per percentage of wages insured for the remainder, two figures:
+# A = percentage of the basis rate, B = number of weeks of alternative
+# insurance. The manual notes these multipliers are "not commonly used".
+# Each row's list is 18 values: A,B for each wage percentage below, in order.
+# Values are transcribed verbatim from p.26 (two appear to be source typos:
+# 18-month rows show 11 in the 75% A column, and 30-month/39-week shows 195 in
+# the 66.75% A column).
+DUAL_BASIS_WAGE_PCTS = [10, 15, 20, 25, 33.33, 40, 50, 66.75, 75]
+DUAL_BASIS_WAGES = [
+    (12, 4, [55, 7, 59, 9, 64, 10, 66, 10, 76, 13, 83, 16, 94, 19, 113, 20, 122, 33]),
+    (12, 5, [60, 9, 64, 10, 67, 10, 72, 12, 80, 15, 87, 16, 98, 22, 115, 29, 124, 36]),
+    (12, 6, [63, 10, 66, 10, 70, 12, 75, 13, 83, 16, 90, 17, 100, 22, 117, 29, 125, 36]),
+    (12, 8, [69, 10, 71, 12, 76, 13, 81, 15, 88, 17, 95, 19, 104, 24, 119, 33, 127, 36]),
+    (12, 13, [83, 16, 86, 16, 90, 17, 94, 19, 100, 22, 105, 24, 113, 29, 125, 36, 131, 39]),
+    (12, 26, [114, 29, 116, 29, 118, 33, 120, 33, 123, 36, 126, 36, 130, 39, 137, 42, 140, 46]),
+    (18, 4, [41, 9, 46, 12, 49, 13, 54, 15, 64, 19, 71, 24, 83, 36, 102, 54, 11, 58]),
+    (18, 5, [45, 12, 49, 13, 52, 15, 58, 16, 67, 22, 74, 26, 85, 39, 103, 54, 11, 61]),
+    (18, 6, [46, 12, 50, 16, 55, 16, 60, 17, 69, 24, 76, 29, 87, 39, 104, 54, 11, 61]),
+    (18, 8, [49, 13, 54, 15, 59, 17, 64, 19, 72, 26, 79, 33, 89, 42, 106, 56, 11, 62]),
+    (18, 13, [59, 17, 64, 19, 68, 22, 73, 26, 80, 33, 86, 39, 95, 49, 110, 58, 118, 63]),
+    (18, 26, [80, 33, 83, 36, 87, 39, 90, 42, 96, 49, 100, 52, 107, 56, 118, 63, 123, 67]),
+    (24, 4, [55, 7, 59, 9, 64, 10, 66, 10, 76, 13, 83, 16, 94, 19, 113, 20, 122, 72]),
+    (24, 5, [36, 12, 38, 13, 43, 16, 48, 19, 57, 29, 64, 39, 74, 52, 91, 65, 100, 77]),
+    (24, 6, [37, 13, 40, 15, 45, 17, 50, 22, 58, 29, 65, 39, 75, 52, 92, 67, 100, 77]),
+    (30, 8, [38, 13, 43, 16, 48, 19, 53, 24, 61, 33, 67, 42, 77, 54, 93, 67, 101, 79]),
+    (30, 13, [46, 17, 51, 22, 55, 26, 59, 33, 67, 42, 72, 49, 81, 56, 96, 69, 103, 79]),
+    (30, 26, [62, 36, 66, 39, 69, 46, 73, 49, 78, 54, 83, 58, 90, 65, 102, 76, 108, 81]),
+    (30, 39, [71, 46, 74, 52, 77, 54, 80, 56, 85, 60, 89, 65, 95, 69, 195, 78, 110, 82]),
+    (30, 52, [80, 56, 83, 58, 85, 60, 88, 63, 92, 67, 95, 69, 100, 74, 108, 81, 113, 87]),
+    (36, 4, [23, 12, 28, 16, 33, 22, 38, 29, 47, 46, 54, 56, 64, 69, 81, 100, 89, 112]),
+    (36, 5, [25, 13, 30, 17, 35, 24, 40, 33, 48, 49, 59, 58, 65, 71, 82, 100, 90, 115]),
+    (36, 6, [27, 15, 31, 19, 36, 26, 41, 36, 49, 49, 56, 60, 66, 74, 82, 100, 90, 115]),
+    (36, 8, [29, 16, 34, 22, 38, 29, 43, 39, 51, 54, 58, 63, 67, 74, 83, 104, 91, 117]),
+    (36, 13, [34, 22, 38, 29, 43, 39, 48, 49, 55, 58, 61, 67, 70, 78, 85, 107, 93, 120]),
+    (36, 26, [45, 42, 48, 49, 52, 54, 56, 60, 63, 69, 68, 76, 76, 89, 89, 112, 95, 122]),
+    (36, 39, [51, 54, 54, 56, 58, 63, 61, 67, 67, 74, 72, 81, 79, 92, 91, 117, 97, 125]),
+    (36, 52, [57, 60, 60, 65, 63, 69, 66, 74, 72, 81, 76, 89, 83, 104, 93, 120, 99, 128]),
+]
+
 
 def build(db_path: Path = DB_PATH) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -755,6 +800,18 @@ def build(db_path: Path = DB_PATH) -> None:
     conn.execute("CREATE TABLE plate_glass(cover TEXT, minimum_rate_pct REAL, note TEXT)")
     conn.execute("INSERT INTO plate_glass VALUES(?,?,?)",
                  ("Plate Glass", 2.0, "Mandatory excess 5% each loss, min Rwf100,000"))
+
+    # Consequential Loss - Dual Basis Wages Cover matrix (p26)
+    conn.execute("""CREATE TABLE consequential_loss_dual_basis_wages(
+        indemnity_period_months INTEGER, initial_period_weeks INTEGER,
+        wage_pct_insured REAL, pct_of_basis_rate REAL,
+        alternative_insurance_weeks INTEGER)""")
+    _dbw = []
+    for months, weeks, vals in DUAL_BASIS_WAGES:
+        for i, wp in enumerate(DUAL_BASIS_WAGE_PCTS):
+            _dbw.append((months, weeks, wp, vals[2 * i], vals[2 * i + 1]))
+    conn.executemany(
+        "INSERT INTO consequential_loss_dual_basis_wages VALUES(?,?,?,?,?)", _dbw)
 
     # 40-42. Large-risk registers (p76-80)
     for tbl, rows in [("large_risks_property", LARGE_RISKS_PROPERTY),

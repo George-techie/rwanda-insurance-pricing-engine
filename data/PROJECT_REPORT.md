@@ -1,462 +1,478 @@
-# ASSAR Rwanda Insurance Pricing & Information Engine
+# ASSAR Insurance Pricing & Information Engine
 
-## Design Report: Architecture, Decisions, and Trade-offs
+## Technical Report: Architecture, Data Design, Retrieval, and Audit
 
-This document describes the ASSAR pricing-and-information system, the
-engineering decisions taken while building and extending it, and the
-trade-offs behind each choice. It is written so that a reader who has never
-seen the codebase can understand both what the system does and why it is
-shaped the way it is. The source material throughout is the Association of
-Insurers of Rwanda (ASSAR) Approved General Business Pricing Manual for the
-Rwandan Insurance Industry, Version 3, effective 25 January 2021, an 81-page
-document covering minimum premium rates and underwriting guidance for roughly
-two dozen classes of general (non-life) insurance.
+This report documents the ASSAR pricing-and-information system end to end: what
+it does, how it is built, the design choices behind the data and retrieval
+layers, and a full audit table mapping every SQL table back to its source table
+and page in the manual. The source throughout is the Association of Insurers of
+Rwanda (ASSAR) Approved General Business Pricing Manual for the Rwandan
+Insurance Industry, Version 3, effective 25 January 2021 (81 pages).
 
 ---
 
-## 1. Executive Summary
+## 1. Introduction
 
-The project turns a long, table-heavy PDF pricing manual into a system that
-can both compute premiums deterministically and answer natural-language
-questions about the manual's numbers. It does this with a deliberately
-hybrid design: exact numeric tables live in SQLite, while the manual's prose
-(definitions, conditions, warranties, exclusions, underwriting guidance) lives
-in a vector store for semantic retrieval. A language model never performs the
-pricing arithmetic itself; it extracts parameters, calls typed Python
-calculators that read exact rates from the database, and then phrases the
-result. That separation keeps quotes reproducible and unit-testable while
-still allowing flexible, conversational questions.
+Insurance pricing manuals are written for people to read, not for machines to
+query. The ASSAR manual interleaves dense numeric rate tables, a 104-row fire
+grid, transit and marine commodity grids, liability and engineering rates,
+bonds, political-violence rates, and registers of large risks, with paragraphs
+of underwriting prose: definitions, conditions, warranties, exclusions, and
+guidance. A reader who wants a single number has to find the right page; a
+reader who wants to understand a clause has to read several.
 
-During this engagement the system was extended with a second, purpose-built
-database designed specifically for a text-to-SQL information engine: one
-cleanly named SQL table per table in the PDF. This lets an agent map a plain
-question such as "what is the fire rate for a bank?" directly to a single,
-well-named table, so an end user can query the manual's contents in natural
-language instead of reading eighty-one pages. The work was verified against
-the source, committed to version control on a feature branch, merged to the
-main branch, and pushed to the remote repository.
+This system turns that manual into something a client or underwriter can query
+in plain language. It answers two distinct kinds of question. The first is
+quantitative and exact: what minimum rate applies to a risk, what multiplier
+applies for an indemnity period, what the mandatory excess is, what premium a
+given cover costs. The second is qualitative: what a term means, what is
+excluded, which warranty must be incorporated. The system is deliberately built
+so that the exact numbers are served exactly and deterministically, while the
+open-ended questions are answered fluently and with citations.
 
----
-
-## 2. Problem and Context
-
-Insurance pricing manuals are reference documents, not databases. The ASSAR
-manual interleaves dense numeric tables (a 104-row fire-risk grid, commodity
-transit grids, liability rates, engineering rates, bonds, political-violence
-rates, large-risk registers) with paragraphs of underwriting prose. Two very
-different kinds of questions arise from such a document. The first is
-quantitative and exact: what minimum rate applies to a given risk, what
-multiplier applies for a chosen indemnity period, what the mandatory excess
-is. The second is qualitative and semantic: what a clause means, what is
-excluded, which warranty must be incorporated, how a cover behaves.
-
-A single retrieval-augmented-generation (RAG) pipeline handles the second kind
-of question well but is a poor fit for the first. Embedding a value such as
-0.3144% into a vector and retrieving it by similarity is fragile: numerically
-adjacent or textually similar cells blur together, and a language model asked
-to read a rate out of retrieved text can easily transcribe or round it wrong.
-In insurance, a wrong rate cell is not a cosmetic error; it is a real
-underwriting and financial error. The core design problem, therefore, is to
-serve exact numbers exactly while still answering open-ended prose questions
-fluently.
+The result is a conversational assistant with three faces: a chat that holds a
+multi-turn conversation, a structured quote calculator, and a browsable
+database. All of it is grounded in the manual, and every premium is computed by
+tested code rather than guessed by a language model.
 
 ---
 
-## 3. System Architecture
+## 2. System Architecture
 
-The system is organized around the principle that numbers and prose deserve
-different storage and different retrieval mechanics.
+The architecture follows one principle: numbers and prose are stored and
+retrieved differently, and a language model orchestrates but never computes.
 
-Numbers are stored in SQLite. SQLite was chosen because it is a single
-self-contained file with zero server setup, ships inside the Python standard
-library, supports ordinary SQL, and can be opened by any database browser or
-by a language model emitting SQL. For a reference dataset of a few hundred
-rows this is more than sufficient and far simpler than running a database
-server.
+A free-text question first reaches a Manager/router that classifies it. If it
+is a pricing or number request, it is sent to the Quant layer: typed Python
+calculators that read exact rates from SQLite and compose the premium, plus
+text-to-SQL lookups against the per-table information database. If it is a
+concept question, it is sent to the Retriever, which performs semantic search
+over the manual's prose. The language model then composes a final answer,
+citing manual pages and showing the exact rates used; a Verifier step checks
+the unit of each figure (percent vs per-mille vs franc amount) and that prose
+claims are grounded in retrieved passages.
 
-Prose is stored in a local vector store (ChromaDB) with embeddings computed
-on-device by a sentence-transformers model. Running embeddings locally avoids
-sending the manual to a third-party embedding API and removes any per-call
-cost or network dependency for retrieval. The default embedding model is a
-small English model chosen for speed on a CPU; a multilingual model is
-available as a drop-in replacement should Kinyarwanda or French content be
-added later.
+```
+                          +-----------------------------+
+        user question --> |      Manager / Router       |
+                          | (classify: number vs prose) |
+                          +--------------+--------------+
+                            |                          |
+                   number / quote                  concept / definition
+                            |                          |
+                            v                          v
+              +----------------------------+  +----------------------------+
+              |   Quant  (typed Python)    |  |   Retriever  (ChromaDB)    |
+              |  pricing calculators +     |  |  semantic search over the  |
+              |  read-only text-to-SQL     |  |  manual prose (embeddings) |
+              +-------------+--------------+  +-------------+--------------+
+                            |                               |
+                            v                               v
+              +----------------------------+  +----------------------------+
+              | SQLite rate tables         |  | corpus.md section chunks   |
+              | assar.db / assar_info.db   |  | + page citations           |
+              +-------------+--------------+  +-------------+--------------+
+                             \                             /
+                              v                           v
+                          +----------------------------------+
+                          |  LLM composes a cited answer;    |
+                          |  Verifier checks units & sources |
+                          +----------------------------------+
+```
 
-The control flow is a router. A free-text query is inspected; if it is a
-pricing or number request it is dispatched to typed Python calculators that
-read exact rates from SQLite and compute the premium deterministically; if it
-is a concept question it is dispatched to similarity search over the vector
-store. The language model's role is confined to understanding the request,
-selecting the right tool, and composing a grounded, cited answer. It does not
-invent numbers and it does not do arithmetic. A separate quote path bypasses
-the model entirely and calls the calculators directly, so the pricing
-functionality works even with no model or API key configured.
+The deliberate trade-off is determinism and auditability over end-to-end neural
+generation. A purely generative system would be simpler but impossible to trust
+for binding figures, because embeddings blur exact values and a model reading a
+rate out of retrieved text can round or transcribe it wrong. By confining the
+model to understanding the request, selecting a tool, and phrasing the result,
+the financially sensitive arithmetic stays under tested, reproducible control.
+A separate quote path bypasses the model entirely and calls the calculators
+directly, so pricing works even with no language-model key configured.
 
-The trade-off embodied here is determinism and auditability over end-to-end
-neural flexibility. A purely generative system would be simpler to wire up but
-impossible to trust for binding figures. By constraining the model to
-orchestration and explanation, the system keeps the parts that must be correct
-under deterministic, testable control, and reserves the model for the parts
-where fluency and judgement actually help.
+The language model is pluggable (Groq, Ollama, or Hugging Face via one
+OpenAI-compatible client). Embeddings always run locally. Premiums are produced
+by typed functions covered by 39 deterministic tests.
 
 ---
 
-## 4. The Data Layer: Two Databases
+## 3. Data Design Choices
 
-A defining decision of this engagement was to maintain two SQLite databases
-built from the same manual but shaped for two different consumers. They are
-not redundant; each is optimized for a distinct access pattern, and conflating
-them would degrade both.
+The system keeps two SQLite databases, both built from the same manual but
+shaped for different consumers. This is the central data decision.
 
-### 4.1 The Pricing Database
+The first, assar.db, uses four generic tables. A single rate table holds most
+per-category rates, namespaced by a scheme column (fire, public_liability,
+aviation, bond, pvt, and so on). Separate tables hold the two-dimensional
+transit commodity grids, the ordered discount and multiplier schedules, and
+per-product constants such as minimum premiums and mandatory excesses. This
+compact, normalized shape is convenient for the pricing calculators to join and
+iterate in code, and it is what the 39 tests pin.
 
-The first database, assar.db, is built from a transcription module and uses a
-small set of generic, normalized tables. A single rate table holds most
-per-category rates, namespaced by a scheme column so that fire, public
-liability, aviation, bonds, and other families coexist in one place. Separate
-tables hold the two-dimensional transit commodity grids, the ordered
-discount and multiplier schedules, and per-product constants such as minimum
-premiums and mandatory excesses. This shape is deliberately tuned for the
-pricing calculators, which iterate, join, and look up rates programmatically.
-It is covered by a suite of deterministic tests that pin the arithmetic of the
-quote functions. Because those calculators and tests depend on this exact
-schema, the database is treated as stable and is not restructured.
-
-### 4.2 The Information-Engine Database
-
-The second database, assar_info.db, was created during this engagement for a
-different purpose: a text-to-SQL information engine. Here the design rule is
-inverted. Instead of a few generic tables namespaced by a column, there is one
-cleanly named SQL table per table in the PDF: a fire-and-allied-perils table,
-a special-perils table, a bonds-and-guarantees table, a marine-cargo table,
-liability tables, engineering tables, the large-risk registers, and so on.
-Forty-five tables in total, holding several hundred rows.
-
-The reason for this shape is that a language model writing SQL performs far
-better against descriptive, single-purpose tables than against a generic table
-keyed by an opaque scheme string. A question such as "what is the rate for a
-performance bond?" maps naturally to a query against a bonds-and-guarantees
-table with a bond-type column; the model does not have to know an internal
-namespacing convention. Well-named tables and columns are, in effect, the
+The second, assar_info.db, inverts the design: one cleanly named SQL table per
+table in the manual, 46 in total. A question such as "what is the fire rate for
+a bank" maps naturally to a query against a fire_allied_perils table with a
+risk_category column, so a text-to-SQL agent does not need to know an internal
+namespacing convention. Descriptive table and column names are, in effect, the
 schema documentation the model reads to ground its query.
 
-### Why Two Databases Rather Than One
-
-The alternative was to force a single schema to serve both the calculators and
-the query engine. That was rejected. The calculators want compact, normalized
-tables that are convenient to join and iterate in code; the query engine wants
-verbose, self-describing tables that read almost like the PDF. Optimizing one
-schema for both goals would compromise each. Keeping two databases, both
-rebuilt from the same verified source data, lets each serve its consumer
-cleanly. The cost is a second build step and a second file to keep in sync,
-which is a small and well-contained price. Critically, the new database was
-added without touching the existing one, so the pricing calculators and their
-tests were never put at risk.
-
----
-
-## 5. Key Decisions and Trade-offs
-
-This section records the specific judgements made while building and extending
-the system, and the reasoning behind each.
-
-### 5.1 Verify Before Rebuilding
-
-When the full PDF first became available, the obvious-looking request was to
-extract its tables into SQL from scratch. But the project already contained a
-database built from this very manual. Rebuilding blindly would have duplicated
-existing, possibly-correct work and risked introducing fresh transcription
-errors. The chosen course was first to verify the existing data against the
-newly visible source: spot-checking the cells most prone to error, including
-the special-perils rates, the fire grid, the per-mille political-violence
-rates, the bond rates, the aviation rates, and the two-dimensional transit
-grids. Every checked value matched the source, and the existing test suite
-passed. Establishing that the underlying numbers were trustworthy meant the
-later work could reuse them rather than re-transcribe them, which materially
-reduced risk.
-
-### 5.2 One Table Per PDF Table
-
-The central decision for the information engine was granularity: how many
-tables, and how named. The generic four-table schema that serves the
-calculators is awkward for an agent because it hides each class behind a
-scheme value. The decision was to emit one cleanly named table per table in
-the PDF. This maximizes the agent's chance of writing a correct query from a
-plain question, at the cost of more tables to create and a looser mapping to
-the calculators. Since the two databases are separate, that looser mapping is
-acceptable: the information engine does not need to feed the calculators.
-
-### 5.3 Reuse Verified Values Versus Re-transcribe
-
-Having verified the seed values, the next question was whether to reuse them
-when building the new tables or to re-transcribe from the PDF. Re-transcription
-would have reintroduced exactly the transcription risk that verification had
-just eliminated. The decision was to reuse the verified numeric values
-programmatically and only transcribe content that was genuinely missing, namely
-the large-risk registers. This keeps a single source of truth for the numbers
-and confines new manual transcription to the smallest necessary surface.
-
-### 5.4 Exact Verbatim Labels
-
-The first build of the information engine normalized category labels into a
-tidy, title-cased form. On review, this was the wrong call for a query engine:
-if the stored label differs from the manual's wording, an agent's text matching
-against the source phrasing can miss. The labels were therefore rebuilt to be
-exact verbatim strings from the PDF, including punctuation, ampersands,
-parentheses, and even the typographic ellipsis character. The numeric values
-remained the verified ones. To guarantee the exact-label lists never drift out
-of alignment with the verified value lists, a pairing helper asserts equal
-length at build time and fails loudly otherwise, so a mismatch can never
-silently shift a label onto the wrong number. The trade-off is that some labels
-are long and contain unusual characters, which means an agent should use
-partial matching rather than exact-equality matching; this is a reasonable and
-well-understood pattern for text-to-SQL.
-
-### 5.5 Units and a Data Dictionary
-
-A subtle correctness hazard in any rate table is the unit. Most columns already
-encode their unit in the column name, but a grid of bare numbers can still
-leave a reader unsure whether a figure is a percentage, a per-mille rate, or a
-franc amount; and one table of market parameters genuinely mixes francs and
-percentages in a single value column. Two measures were taken. First, the
-mixed table gained an explicit per-row unit column. Second, a data-dictionary
-table was generated that documents the unit of every column across all data
-tables, so a user or an agent can simply query the units rather than guess. The
-political-violence rates are flagged specifically as per-mille, because mistaking
-a per-mille rate for a percentage is the easiest order-of-magnitude error to
-make in this manual.
-
-### 5.6 Transcribing the Large-Risk Registers
-
-The manual's closing pages list named large risks and their insured values
-across property, engineering, and accident classes. These were not part of the
-pricing seed, because they are reference data rather than rate inputs, but they
-are exactly the kind of numeric general information a user might want to query.
-They were therefore transcribed into their own tables. Insured values were
-captured as integer franc amounts so they can be sorted and compared
-numerically, which makes questions such as "what are the largest property
-risks?" answerable directly.
-
-### 5.7 A Separate Database File
-
-A final structural choice was where to put the new tables. Adding them to the
-existing pricing database would have mingled two schemas with two purposes in
-one file and risked disturbing the calculators. A separate file keeps the
-concerns cleanly divided, lets each database be rebuilt independently, and
-follows the repository's existing convention of committing the built database
-so the project runs out of the box.
-
-### 5.8 Generating This Report Without Adding Dependencies
-
-This report itself reflects a small but characteristic trade-off. At the moment
-it was produced, a large dependency installation for the vector store was
-already running in the background, downloading a substantial machine-learning
-runtime. Starting a second package installation concurrently risked competing
-for the same environment and corrupting the in-progress install. Rather than
-add a third-party PDF library, the report is rendered by a pure
-standard-library generator that emits the PDF directly. It uses the built-in
-monospaced core font so that line wrapping is exact without needing font-metric
-tables, transliterates any unusual characters to a safe set, compresses each
-page stream, and writes a correct cross-reference table by hand. The trade-off
-is plainness: the output is clean and readable rather than typographically
-elaborate. In exchange it has zero dependencies, cannot conflict with any other
-installation, and will run on any Python without setup. This mirrors a theme
-that runs through the whole project: prefer the simplest mechanism that is
-correct and self-contained over a richer one that adds fragility.
+Three further choices shape the data. First, numbers were verified before being
+reused: the rate values were spot-checked cell by cell against the source PDF,
+and the information database reuses those verified values rather than
+re-transcribing them, confining new manual transcription to the large-risk
+registers. Second, labels in the information database are exact verbatim strings
+from the manual, including punctuation, so an agent's text matching lines up
+with the source wording; a build-time guard fails if any label list drifts out
+of alignment with its verified values. Third, units are made explicit: most
+columns carry their unit in the column name (rate_pct, rate_per_mille,
+insured_value_rwf), and a data_dictionary table documents the unit of every
+column, so a percentage is never mistaken for a per-mille rate, the easiest
+order-of-magnitude error in this manual.
 
 ---
 
-## 6. Alternatives Considered
+## 4. Chunking Strategy
 
-Several plausible alternative designs were weighed and set aside, and recording
-them clarifies why the chosen shape is what it is.
+The prose corpus is chunked for retrieval with a structure-aware,
+section-based strategy rather than a fixed page or character window, because
+the manual is a long, structured document whose logical units are sections that
+often span page breaks.
 
-A single pure-RAG system, embedding the entire manual including its tables and
-answering everything by retrieval and generation, was the most obvious
-alternative. It was rejected for numbers because embeddings blur exact values
-and a generative model reading a rate out of retrieved text can round or
-transcribe it incorrectly. RAG remains the right tool for prose, which is
-exactly where the design uses it, but it is the wrong tool for binding figures.
+The corpus builder extracts page text into a Markdown corpus, tagging each page
+so chunks can be cited. The chunker then detects heading runs, the manual's
+section titles such as "PRICING OF CONSEQUENTIAL LOSS" or "FULL VALUE BASIS",
+including titles that wrap onto a second line, and groups each section's body
+together even across page boundaries. Long sections are sub-split on sentence
+boundaries at roughly 1,600 characters with 200 characters of overlap. Every
+chunk is prefixed with its section title, which gives the embedding model
+context about what the chunk is, and carries its page anchor for citation plus
+the section name in metadata. Front-matter such as the cover page and table of
+contents is dropped, and stray PDF bullet glyphs are stripped.
 
-A single database serving both the calculators and the query engine was
-considered and rejected, as discussed above, because the two consumers want
-opposite schema shapes. A related idea, storing the rates as flat CSV or JSON
-files rather than in SQLite, was rejected because it would give up SQL querying,
-sorting, and filtering, which are precisely what a text-to-SQL agent needs, and
-would gain nothing in simplicity over a single SQLite file.
-
-Fine-tuning a language model on the manual's contents was considered and
-rejected as both heavier and less trustworthy than retrieval and structured
-lookup: it would bake the figures into opaque weights, make updates expensive,
-and still provide no guarantee of numerical exactness. A knowledge-graph
-representation was considered for the relationships between covers, extensions,
-and conditions, but it was judged premature; the manual's structure is
-predominantly tabular, and a graph would add modelling overhead without a clear
-near-term payoff. These can be revisited if the system grows beyond a single
-manual.
-
-Finally, having the language model compute premiums directly from retrieved
-rates was rejected in favour of typed Python calculators. Letting the model do
-arithmetic reintroduces exactly the non-determinism the design exists to avoid;
-confining it to parameter extraction and explanation keeps the financially
-sensitive computation under tested, reproducible control.
+The most important chunking decision is what is excluded: the numeric rate
+tables are not embedded at all. They live in SQLite and are served exactly.
+This removes the single biggest failure mode for a financial document, an
+embedding fuzzing a value like 0.3144 percent, and it is why the corpus holds
+only definitions, conditions, warranties, and guidance.
 
 ---
 
-## 7. The Retrieval Layer
+## 5. Retrieval Strategy
 
-The prose half of the system is fully implemented in code. A corpus builder
-extracts the manual's narrative text from the PDF into a Markdown corpus,
-tagging each section with its page so that answers can cite a page. An ingest
-step chunks that corpus into overlapping passages, embeds them locally, and
-writes the vectors into a persistent ChromaDB collection. A retriever performs
-cosine-similarity search to fetch the most relevant passages for a question,
-which the router then feeds to the language model as grounding.
+Concept questions are answered by retrieval-augmented generation over the prose
+corpus. Chunks are embedded locally with a sentence-transformers model
+(BAAI/bge-small-en-v1.5; a multilingual model is a drop-in for Kinyarwanda or
+French) and stored in a persistent ChromaDB collection using cosine similarity.
+At query time the same model embeds the question, the top matches are fetched,
+and the language model composes an answer grounded in those passages with page
+citations. The retrieved section title and page travel with each result, so an
+answer can point the reader to the exact place in the manual.
 
-At the time of writing, the extracted corpus is present but the vector store
-has not yet been built on this machine, because building it requires installing
-the embedding and vector-store dependencies and downloading the embedding model
-on first run. That build is the remaining step to make the retrieval side live;
-once the dependencies finish installing, ingesting the corpus produces the
-vector store and the concept-question path becomes operational. The chunking
-strategy uses a moderate passage size with overlap and prefers to break on
-sentence or line boundaries, which balances retrieval precision against keeping
-enough context in each chunk to be self-explanatory.
-
----
-
-## 8. Quality and Verification
-
-Confidence in the system rests on several layers. The pricing calculators are
-pinned by a deterministic test suite that exercises the quote arithmetic, so a
-regression in the math is caught immediately. The numeric values were
-spot-checked against the source PDF across the highest-risk tables before any
-reuse. The information-engine build includes a structural guard that fails if
-exact labels and verified values fall out of alignment, which prevents the most
-likely silent error in that build. After building the new database, sample
-queries that resemble real agent questions were run and their answers checked
-against the PDF: the fire rate for a bank, the rate for a performance bond, the
-largest property risks by insured value, the marine-cargo rate for
-pharmaceuticals, and the per-mille political-violence rate for hotels and banks
-all returned the correct figures. The stored text was also checked at the byte
-level to confirm that verbatim characters such as the typographic ellipsis were
-preserved correctly as proper Unicode rather than corrupted, since a console
-display artifact had initially suggested otherwise.
+The router is hybrid. Number and quote questions are routed to the Quant layer,
+which either calls a typed pricing calculator or runs a read-only SQL lookup
+against the information database; concept questions are routed to the retriever.
+Lookups are made robust with scheme-scoped fuzzy matching, so an approximate
+category such as "hotel" resolves to the valid key, and the dispatcher coerces
+string numbers and drops arguments a calculator does not accept. The model is
+restricted to general (non-life) business and declines motor, life, or medical
+questions rather than inventing a quote. The conversation is multi-turn: prior
+turns are passed back so a follow-up like "and for a bank?" keeps context.
 
 ---
 
-## 9. Version Control and Repository Hygiene
+## 6. Audit: SQL Tables Mapped to the Source Manual
 
-The new work was committed deliberately rather than dropped onto the main
-branch directly. A feature branch was created, the new build module, the built
-information database, and the updated documentation were staged and committed
-with a descriptive message, and the branch was then merged into main as a
-fast-forward and pushed to the remote. The built database was committed
-intentionally, following the repository's established convention of shipping
-the database so the project runs without an extra build step; the repository's
-ignore rules already document this choice.
+The table below maps every table in the information database (assar_info.db) to
+the table or section it was built from in the ASSAR manual and the page(s) where
+that source appears, so the data can be verified against the PDF. SQL names are
+exactly as they appear in the database.
 
-One hygiene issue was caught and corrected during the work. Internal working
-notes had initially been written into a folder inside the repository rather
-than into the assistant's own separate notes location. This would have polluted
-the project with files that do not belong to it. The notes were moved to their
-correct location outside the repository and removed from version control before
-the commit, so the committed history contains only genuine project artifacts.
+{{AUDIT_TABLE}}
+
+Audit notes. Pricing values are reused from the verified seed used by the
+calculators; the information database adds verbatim labels and the large-risk
+registers. Three tables are derived rather than transcribed from a single table:
+market_parameters gathers scattered market-wide figures, minimum_premiums
+gathers per-class minimums, and data_dictionary is engine metadata documenting
+units. PVT rates are stored in per mille; every other class is percent.
 
 ---
 
-## 10. Known Limitations and Risks
+## 7. Deployment and User Interface
 
-The system is a faithful transcription of a single manual, and that framing
-defines its limits. The rates are only as current as the 2021 manual; if ASSAR
-revises them, the data must be rebuilt. The values were transcribed by hand at
-some point in the project's history, and although they have been spot-checked
-extensively, any binding use should include a deliberate review against the
-source, because a single wrong cell is a real underwriting error. Two specific
-hazards are worth restating: the political-violence rates are expressed in
-per-mille rather than percent, which is the easiest order-of-magnitude mistake
-to make; and a small number of band edges in the voluntary-deductible schedule
-are described with overlapping boundaries in the source, so the engine resolves
-an exact-boundary value to a defined side and that judgement should be
-confirmed with ASSAR.
+The system runs as a Streamlit web application launched with a single command,
+backed by the two SQLite files and a local ChromaDB store. Setup installs the
+requirements, copies the environment template, and adds a language-model key
+(Groq by default; the key lives in a gitignored .env). The data is built in
+three steps: the pricing database from the transcribed tables, the information
+database (one table per manual table), and the prose corpus plus its vector
+store, after which the app is started. The embedding model is pre-warmed at
+startup so the first chat message is not a silent wait. The databases are
+committed so the project runs out of the box.
 
-For the information engine specifically, the verbatim labels include long
-strings and unusual characters, so an agent querying them should rely on
-partial text matching rather than exact equality, and should consult the
-data-dictionary table for units rather than assuming a default. The retrieval
-layer is not yet live until its vector store is built, so concept questions are
-unavailable until that step completes.
+The interface is a wide layout with a themed banner and a sidebar that shows
+live status: the rate database and its row count, the information engine and its
+46 tables, the language-model backend and whether a key is set, and whether the
+vector store is built. A standing caution reminds users to verify rates against
+the source manual before binding cover.
 
 ---
 
-## 11. Recommended Next Steps
+## 8. What It Does, Section by Section
 
-The most immediate step is to finish building the vector store so the prose
-side of the system becomes operational, completing the hybrid design. After
-that, the natural next piece is the agent layer that ties everything together:
-a router that classifies an incoming question, sends number questions to the
-information database as SQL and concept questions to the retriever, and composes
-a single grounded answer with citations. The data-dictionary table should be
-supplied to that agent as part of its schema context so it always knows the
-unit of every figure it returns.
+Chat. The primary, client-facing surface is a multi-turn chat with conversation
+memory and a strip of product tiles showing the classes covered. A question is
+classified and routed by question type. Quote answers show a card with the
+product, the exact rate and unit, and the final premium, with a collapsible
+breakdown; their evidence is the rate table read by the calculator, so quote
+turns do not attach prose passages. Concept answers are instead grounded in
+retrieved manual passages shown with page citations. If the user asks for a
+rate or a premium without giving a sum insured, the assistant states the rate
+and asks for the amount rather than assuming one. Because it remembers the
+conversation, follow-up questions work naturally. It can quote every class in
+the manual that has a calculator, twenty-one tools in all; out-of-scope
+questions are politely declined.
 
-Beyond that, a light validation harness for the information database, analogous
-to the pricing tests, would guard the new tables against future edits, and a
-periodic check against any revised ASSAR manual would keep the data current.
-Together these steps would turn a static reference PDF into a trustworthy,
-queryable, conversational pricing and information service: deterministic where
-the numbers must be exact, fluent where the questions are open-ended, and
-auditable throughout.
+Get a Quote. A deterministic calculator with dropdowns for the main products. It
+bypasses the language model entirely and calls the typed calculators directly,
+so it always works and always returns exact figures with a full breakdown and
+the applicable excess. This is the reliable path for a precise quote.
+
+Database. A transparency surface that lets a user browse and run read-only SQL
+against either database: the four-table pricing engine, or the 46-table
+information engine with its example queries and the data_dictionary of units.
+Results can be filtered, searched, and downloaded as CSV. Only SELECT and WITH
+queries are allowed, on a genuinely read-only connection.
+
+Underneath all three, the pricing calculators read exact rates from SQLite and
+compose premiums with minimum-premium floors, mandatory excesses, short-period
+factors, and policy fees as the manual specifies, and they are covered by
+deterministic tests so a wrong cell or a broken composition is caught
+immediately. The whole system is designed to be deterministic where the numbers
+must be exact, fluent where the questions are open-ended, and auditable
+throughout. As always, the figures should be verified against the source manual
+before binding cover.
 
 ---
 
-## Appendix A: Information-Engine Table Catalog
+## 9. Pricing Models for the Main Products (Get a Quote)
 
-The information database contains forty-five tables. They are grouped here by
-theme to convey the breadth of coverage; column units are documented in full by
-the data-dictionary table that accompanies them.
+Every premium on the Get a Quote tab is produced by a typed Python calculator
+that reads exact rates from SQLite; no language model is involved. The
+calculators share a common skeleton, then each product applies its own
+loadings, discounts, and floors as the manual specifies.
 
-Property and fire cover is served by a fire-and-allied-perils table holding the
-full commercial and administrative risk grid with its standard-fire and
-all-perils columns, a fire-private-dwellings table, a special-perils table
-giving the commercial-industrial and residential rate for each peril, and a
-plate-glass table. Business-interruption cover is served by a
-consequential-loss basis table, a consequential-loss indemnity-period
-multiplier table, and a shared time-excess discount table.
+```
+premium = sum_insured x rate            (rate /100 for percent, /1000 for per mille)
+        + loadings (e.g. industrial process load)
+        - discounts (FEA, voluntary deductible, security, clause/mode, stock)
+        x multipliers (first-loss, multi-trip, indemnity period, duration load)
+        x short-period factor            (fraction of annual premium)
+        floored at the class minimum premium
+        + policy fee (Rwf5,000, where the class charges one)
+        = final premium (net of taxes)
+```
 
-Theft and money cover is served by a burglary full-value table, a first-loss
-multiplier table, a money-insurance table covering transit and safe, and a
-money annual-carryings band table. The financial-institution covers are served
-by a bankers-blanket-bond table and a directors-and-officers-liability table.
+### Fire and Allied Perils
 
-Transit cover is served by three structurally similar grids: goods-in-transit,
-transporters-liability, and marine-cargo, each keyed by the manual's commodity
-classification codes and carrying the containerized and non-containerized rate
-columns and the applicable excess. Marine and aviation cover add a marine-hull
-table, a marine-hull per-occupant premium table, and an aviation table.
+The base rate is the occupancy rate from the fire grid: the standard-fire column
+(fire, lightning, explosion) or the fire-and-all-special-perils column. The fire
+portion is sum insured times that rate. Industrial risks add a 0.025 percent
+process loading plus a flat Rwf25,000 extensions loading, neither of which
+enjoys the FEA discount. A 15 percent Fire Extinguishing Appliances discount
+applies to the fire portion only. A voluntary deductible then earns a banded
+discount (capped at 33.33 percent of the excess amount). A short-period factor
+and the policy fee complete the premium. All fire material-damage cover is
+subject to the Condition of Average.
 
-The liability suite comprises public-liability, employers-liability,
-product-liability, professional-indemnity, and a combined personal-accident and
-group-personal-accident table, with school-liability captured separately
-including its benefit limits. Engineering cover is served by erection-all-risks,
-contractors-all-risks, machinery-breakdown, a contractors-plant-and-machinery
-rate table keyed by hazard class and plant group, a boilers-and-pressure-vessels
-table, and a computer-and-electronic-equipment all-risks table.
+### Public, Employers, Product, and Professional Liability
 
-Guarantees and special risks are served by a bonds-and-guarantees table, a
-fidelity-guarantee table, and a political-violence-and-terrorism table whose
-rates are expressed in per-mille. Several schedule tables capture the
-voluntary-deductible discounts, the short-period scales for the standard case
-and for schools, personal accident, and contractors plant, and the
-indemnity-period multipliers. Reference tables capture the three large-risk
-registers for property, engineering, and accident classes; a market-parameters
-table holding policy fee, commission, and discount caps with explicit per-row
-units; a minimum-premiums table; and the data dictionary that documents the
-unit of every column in the database.
+Premium is the selected limit of indemnity times the occupation rate, adjusted
+by a short-period factor and floored at the class minimum premium (Rwf100,000
+for public, employers, and product; Rwf200,000 for professional indemnity, or
+Rwf25,000 for insurance agents). Professional indemnity carries a 5 percent
+mandatory excess (minimum Rwf200,000).
 
-This catalog is intended to be read by a human, but its real audience is the
-agent: supplied as schema context, these descriptive table and column names are
-what let a plain-language question be turned into a correct query.
+### Goods in Transit and Transporters Liability
+
+The base rate comes from the commodity grid, selected by cover type (all-risks
+or road-accident-only) and whether the cargo is containerized. Transporters
+liability outside Rwanda loads the rate by 30 percent. For multiple trips the
+annual premium is scaled by trip period (30 percent up to 3 months, 60 percent
+up to 6, 90 percent up to 9, 100 percent up to 12). A policy fee is added.
+
+### Marine Cargo
+
+The base is the Institute Cargo Clause A rate for the commodity and packing. A
+transit-mode discount is applied first (road minus 10 percent, sea minus 20
+percent, air minus 30 percent, combined none), then a clause discount (Clause B
+minus 25 percent, Clause C minus 35 percent, Clause A none). A policy fee is
+added.
+
+### Personal Accident and Group Personal Accident
+
+Each benefit is priced off the class base rate: death and total permanent
+disability at the base rate, total temporary disability at 15 percent of it, and
+medical and funeral expenses at ten times it. The selected benefits are summed
+against the capital sum, a short-period factor is applied, and the result is
+floored at the minimum premium (PA Rwf25,000, or Rwf15,000 for an interning
+student; GPA Rwf50,000, or Rwf30,000 for a student).
+
+### Bonds and Guarantees
+
+Premium is the bond value times the bond-type rate. Providing 100 percent cash
+collateral reduces the rate to 3 percent. The premium is floored at Rwf10,000
+for a bid bond and Rwf30,000 for other bonds. Bonds carry the full annual rate
+for any period: no short-period or pro-rata reduction applies.
+
+### Political Violence and Terrorism (PVT)
+
+PVT rates are quoted per mille, not percent, so the premium is sum insured times
+the rate divided by one thousand. Approved security features can earn a discount
+of up to 10 percent. The mandatory deductible is 5 percent of each loss, minimum
+0.5 percent of the sum insured, with a floor of Rwf50,000.
+
+### Engineering: Contractors All Risks and Erection All Risks
+
+Premium is the contract value times the project-type rate. Projects running
+beyond twelve months are loaded by 25 percent for each additional six-month
+block. Third-party liability is included while its limit stays within 15 percent
+of the contract value; above that it is rated separately at 0.2 percent. A
+policy fee is added.
+
+### Machinery Breakdown
+
+Premium is the sum insured times the machine or industry rate, plus a policy
+fee. The mandatory excess is 10 percent of each loss (minimum Rwf500,000) for
+sums insured above Rwf5,000,000, otherwise 5 percent (minimum Rwf250,000).
+
+### Contractors Plant and Machinery (CPM)
+
+The rate is read from the hazard-class by plant-group matrix: plant groups are
+cranes (1), mobile plant (2), and non-mobile plant (3); hazard classes A, B, and
+C reflect terrain and exposure. A CPM-specific short-period scale and a policy
+fee apply. The mandatory excess is 10 percent of claim, minimum Rwf500,000.
+
+### Burglary and Theft
+
+The full-value rate is 0.3 percent for ordinary goods and 0.5 percent for
+high-value goods. On a first-loss basis a multiplier from the first-loss
+schedule is applied according to the ratio of first-loss sum insured to full
+value. A stock-declaration basis earns a 10 percent discount. A short-period
+factor and policy fee apply; the mandatory excess is 10 percent of each loss,
+minimum Rwf50,000.
+
+### Source anchors for the pricing rules
+
+Each rule above is taken from a specific point in the manual; the page(s) are
+listed below so the methodology can be verified against the ASSAR document.
+This covers the pricing rules and loadings; the underlying rate values are
+spot-checked against the manual and should be confirmed cell by cell before
+binding cover.
+
+{{SECTION9_SOURCES}}
+
+---
+
+## 10. Calculation Functions Reference
+
+This section explains every function in the pricing engine (assar/pricing/), so
+the project can be understood and maintained end to end. There are no hard-coded
+answers anywhere: each premium is computed from exact rates read from SQLite.
+
+### Shared building blocks (base.py)
+
+Every calculator is assembled from a few primitives.
+
+- Quote: the result object. It carries the product, sum insured, effective rate
+  and unit, gross/net/final premium, policy fee, excess, a list of
+  human-readable breakdown lines, and any warnings.
+- get_rate(scheme, category, alt): exact rate lookup from the rate table; on an
+  exact miss it falls back to a scheme-scoped fuzzy match (so "hotel" resolves
+  to a valid key). alt selects the second column, e.g. fire's all-perils rate.
+- premium_from_rate(sum_insured, rate, unit): the core multiply. Percent divides
+  by 100, per mille by 1000, and an "amount" unit returns the flat figure.
+- voluntary_deductible_discount(excess, gross): the banded discount for a chosen
+  excess, with the saving capped at 33.33 percent of the excess amount.
+- short_period_fraction(period, schedule): the fraction of the annual premium
+  for cover shorter than a year; 1.0 for a full year.
+- apply_minimum, product_rule, policy_fee: floor a premium at the class minimum,
+  read per-product constants (minimums, excesses, loadings), and the Rwf5,000
+  policy fee.
+
+### Fire family (fire.py)
+
+- quote_fire: base rate from the fire grid (standard fire or all-special-perils
+  column); adds the 0.025 percent industrial process load and Rwf25,000
+  extensions for industrial risks; applies the 15 percent FEA discount to the
+  fire portion only; applies the voluntary-deductible discount; short-period
+  factor; policy fee. Flags the Condition of Average.
+- quote_consequential_loss: uses the fire material-damage rate as the basis,
+  times the cover factor (gross profit 150, auditors 125, wages 100 percent),
+  times the indemnity-period multiplier; short period; policy fee; 14-day excess.
+- quote_burglary: full-value rate 0.3 percent ordinary or 0.5 percent
+  high-value; first-loss multiplier when a first-loss ratio is given; 10 percent
+  stock-declaration discount; short period; fee; excess 10 percent min Rwf50,000.
+
+### Liability, accident, engineering, specialty (products.py)
+
+- quote_liability: limit of indemnity times the occupation rate; short period;
+  minimum premium (100k; professional indemnity 200k, or 25k for agents);
+  professional indemnity carries a 5 percent excess.
+- quote_pa_gpa: prices each selected benefit off the class base rate (death and
+  TPD at base, TTD at 15 percent, medical and funeral at ten times base), sums
+  them against the capital sum; short period; PA/GPA minimums.
+- quote_bond: bond value times the bond-type rate; 100 percent cash collateral
+  reduces the rate to 3 percent; minimum (bid 10k, other 30k); full annual rate,
+  no short period.
+- quote_pvt: per-mille rate (divide by 1000); security-features discount up to
+  10 percent; mandatory deductible 5 percent, min 0.5 percent of SI, floor 50k.
+- quote_car_ear: contract value times project rate; plus 25 percent for each
+  extra six months beyond twelve; TPL included if within 15 percent of the
+  value, else rated separately at 0.2 percent; policy fee.
+- quote_machinery: sum insured times the machine/industry rate; policy fee;
+  excess tiered at the Rwf5,000,000 sum-insured threshold.
+- quote_cpm: rate from the hazard-class by plant-group matrix; CPM short-period
+  scale; policy fee; excess 10 percent min Rwf500,000.
+- quote_fidelity: sum insured times rate (or Rwf30,000 per employee for blanket
+  cover); short period; min 200k; excess Rwf250,000 or 10 percent.
+- quote_bbb: bankers blanket bond, limit times 5 percent; excess 250k or 10
+  percent.
+- quote_do_liability: directors and officers, limit times rate (financial
+  services 5 percent, other offices 2.5 percent); excess 250k or 10 percent.
+- quote_school_liability: flat premium per student times the number of students;
+  short period; inclusive of policy fees and VAT.
+- quote_aviation: sum insured times the class rate; for passenger cover,
+  multiplied by the number of seats; policy fee.
+- quote_marine_hull: hull all risks at 0.8 percent of vessel value, or
+  third-party liability at 0.25 percent; policy fee.
+- quote_boiler: material damage or third-party liability at 0.5 percent; policy
+  fee; excess 10 percent min Rwf625,000.
+- quote_eear: computer/electronic all risks, 0.75 percent at premises, 2 percent
+  portable away, 1.5 percent unspecified tender, 0.75 percent increased cost of
+  working; policy fee; excess 10 percent min Rwf100,000.
+- quote_plate_glass: sum insured times 2 percent; policy fee; excess 5 percent
+  min Rwf100,000.
+
+### Transit (transit.py)
+
+- _transit_rate (helper): selects the correct cell from the commodity grid
+  (road-accident vs all-risks, containerized vs not), with a fuzzy commodity
+  fallback; returns the rate and the excess text.
+- quote_git: Goods in Transit / Transporters Liability; base grid rate; plus 30
+  percent if transporters liability outside Rwanda; multi-trip scaling
+  (30/60/90/100 percent by period); policy fee.
+- quote_marine_cargo: ICC-A base rate; applies the transit-mode discount (road
+  10, sea 20, air 30 percent), then the clause discount (B 25, C 35 percent);
+  policy fee.
+
+### The dispatcher (registry.py)
+
+- run_tool(name, args): the single entry point the chat uses. It coerces
+  string numbers to real numbers, drops any argument a calculator does not
+  accept (so a stray model-generated argument cannot crash a quote), dispatches
+  to the right function, and returns the quote as a dictionary. Errors are
+  returned as data rather than raised. The same file defines the LLM tool
+  schemas that expose all 21 calculators to the chat.
 
 ---
 

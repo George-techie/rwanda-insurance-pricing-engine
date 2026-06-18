@@ -8,6 +8,22 @@ from .base import Quote, policy_fee, premium_from_rate
 MULTI_TRIP = [(3, 30), (6, 60), (9, 90), (12, 100)]
 
 
+def _closest_commodity(scheme, commodity, conn):
+    """Snap an approximate commodity to a valid key within the scheme."""
+    import difflib
+
+    names = [r[0] for r in conn.execute(
+        "SELECT commodity FROM transit_rate WHERE scheme=?", (scheme,))]
+    q = commodity.strip().lower()
+    close = difflib.get_close_matches(q, names, n=1, cutoff=0.6)
+    if close:
+        return close[0]
+    contains = [n for n in names if q in n or n in q]
+    if contains:
+        return max(contains, key=lambda n: difflib.SequenceMatcher(None, q, n).ratio())
+    return None
+
+
 def _transit_rate(scheme, commodity, cover, containerized, conn):
     col = {
         ("road_accident", True): "ra_containerized",
@@ -15,10 +31,18 @@ def _transit_rate(scheme, commodity, cover, containerized, conn):
         ("all_risks", True): "ar_containerized",
         ("all_risks", False): "ar_noncontainerized",
     }[(cover, containerized)]
-    row = conn.execute(
-        f"SELECT {col} AS r, excess FROM transit_rate WHERE scheme=? AND commodity=?",
-        (scheme, commodity),
-    ).fetchone()
+
+    def fetch(c):
+        return conn.execute(
+            f"SELECT {col} AS r, excess FROM transit_rate WHERE scheme=? AND commodity=?",
+            (scheme, c),
+        ).fetchone()
+
+    row = fetch(commodity)
+    if row is None:
+        snapped = _closest_commodity(scheme, commodity, conn)
+        if snapped is not None:
+            row = fetch(snapped)
     if row is None:
         raise ValueError(f"No {scheme} commodity '{commodity}'")
     if row["r"] is None:
