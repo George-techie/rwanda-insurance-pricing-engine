@@ -43,10 +43,11 @@ class Quote:
         calc = premium_from_rate(self.sum_insured, self.rate, self.rate_unit)
         if abs(calc - self.gross_premium) >= 1:
             return None
+        rate = f"{round(self.rate, 6):g}"   # avoid float noise like 0.8775000000000001
         if self.rate_unit == "per_mille":
-            expr = f"{self.sum_insured:,.0f} x {self.rate} per mille / 1000"
+            expr = f"{self.sum_insured:,.0f} x {rate} per mille / 1000"
         else:
-            expr = f"{self.sum_insured:,.0f} x {self.rate}% / 100"
+            expr = f"{self.sum_insured:,.0f} x {rate}% / 100"
         return f"Calculation: {expr} = {calc:,.0f}"
 
     def as_dict(self) -> dict:
@@ -55,7 +56,7 @@ class Quote:
         return {
             "product": self.product,
             "sum_insured": self.sum_insured,
-            "rate": self.rate,
+            "rate": round(self.rate, 6) if self.rate is not None else None,
             "rate_unit": self.rate_unit,
             "gross_premium": round(self.gross_premium, 2),
             "net_premium": round(self.net_premium, 2),

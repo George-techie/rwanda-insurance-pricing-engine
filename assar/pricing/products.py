@@ -83,16 +83,19 @@ def quote_pa_gpa(
         for b in benefits:
             if b in ("death", "tpd"):
                 p = premium_from_rate(death_benefit, base)
-                q.add(f"  {b}: {base}% -> {p:,.0f}")
+                q.add(f"  {b}: {death_benefit:,.0f} x {round(base, 6):g}% = {p:,.0f}")
             elif b == "ttd":
                 p = premium_from_rate(death_benefit, base * 0.15)
-                q.add(f"  ttd: 15% of base ({base*0.15:.4f}%) -> {p:,.0f}")
+                q.add(f"  ttd: {death_benefit:,.0f} x {round(base * 0.15, 6):g}% "
+                      f"(15% of base) = {p:,.0f}")
             elif b in ("medical", "funeral"):
                 p = premium_from_rate(death_benefit, base * 10)
-                q.add(f"  {b}: 10x death rate ({base*10:.3f}%) -> {p:,.0f}")
+                q.add(f"  {b}: {death_benefit:,.0f} x {round(base * 10, 6):g}% "
+                      f"(10x death) = {p:,.0f}")
             else:
                 continue
             total += p
+        q.add(f"Total of selected benefits = {total:,.0f}")
 
         q.rate = base
         q.gross_premium = total
