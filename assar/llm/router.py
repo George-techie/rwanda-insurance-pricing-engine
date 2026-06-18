@@ -86,12 +86,24 @@ def _format_context(chunks: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
+def _last_user_turn(history: list[tuple[str, str]] | None) -> str:
+    for role, content in reversed(history or []):
+        if role == "user" and content:
+            return content
+    return ""
+
+
 def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None = None) -> RouterResult:
     retriever = get_retriever()
     retrieved: list[dict] = []
+    # Retrieve with conversation context: a bare follow-up like "what role does
+    # it play?" has no topic words, so prepend the previous user question to
+    # keep retrieval on-topic.
+    prior = _last_user_turn(history)
+    retrieval_query = f"{prior} {query}".strip() if prior else query
     if retriever.available:
         try:
-            retrieved = retriever.search(query, k=k)
+            retrieved = retriever.search(retrieval_query, k=k)
         except Exception as exc:  # noqa: BLE001
             retrieved = []
             ctx_err = str(exc)
