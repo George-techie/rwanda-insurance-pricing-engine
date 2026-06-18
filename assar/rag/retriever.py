@@ -44,7 +44,8 @@ class Retriever:
         metas = res.get("metadatas", [[]])[0]
         dists = res.get("distances", [[]])[0]
         for doc, meta, dist in zip(docs, metas, dists):
-            out.append({"text": doc, "page": meta.get("page"), "score": 1 - dist})
+            out.append({"text": doc, "page": meta.get("page"),
+                        "section": meta.get("section", ""), "score": 1 - dist})
         return out
 
 
