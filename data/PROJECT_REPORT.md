@@ -221,12 +221,16 @@ the source manual before binding cover.
 
 Chat. The primary, client-facing surface is a multi-turn chat with conversation
 memory and a strip of product tiles showing the classes covered. A question is
-classified and routed; quote answers show a card with the product, the exact
-rate and unit, and the final premium, with a collapsible breakdown and a panel
-of cited manual passages. Because it remembers the conversation, follow-up
-questions work naturally. It can quote every class in the manual that has a
-calculator, twenty-one tools in all, and answers concept questions from the
-prose with page citations; out-of-scope questions are politely declined.
+classified and routed by question type. Quote answers show a card with the
+product, the exact rate and unit, and the final premium, with a collapsible
+breakdown; their evidence is the rate table read by the calculator, so quote
+turns do not attach prose passages. Concept answers are instead grounded in
+retrieved manual passages shown with page citations. If the user asks for a
+rate or a premium without giving a sum insured, the assistant states the rate
+and asks for the amount rather than assuming one. Because it remembers the
+conversation, follow-up questions work naturally. It can quote every class in
+the manual that has a calculator, twenty-one tools in all; out-of-scope
+questions are politely declined.
 
 Get a Quote. A deterministic calculator with dropdowns for the main products. It
 bypasses the language model entirely and calls the typed calculators directly,
