@@ -109,7 +109,7 @@ compact, normalized shape is convenient for the pricing calculators to join and
 iterate in code, and it is what the 39 tests pin.
 
 The second, assar_info.db, inverts the design: one cleanly named SQL table per
-table in the manual, 45 in total. A question such as "what is the fire rate for
+table in the manual, 46 in total. A question such as "what is the fire rate for
 a bank" maps naturally to a query against a fire_allied_perils table with a
 risk_category column, so a text-to-SQL agent does not need to know an internal
 namespacing convention. Descriptive table and column names are, in effect, the
@@ -211,7 +211,7 @@ committed so the project runs out of the box.
 
 The interface is a wide layout with a themed banner and a sidebar that shows
 live status: the rate database and its row count, the information engine and its
-45 tables, the language-model backend and whether a key is set, and whether the
+46 tables, the language-model backend and whether a key is set, and whether the
 vector store is built. A standing caution reminds users to verify rates against
 the source manual before binding cover.
 
@@ -234,7 +234,7 @@ so it always works and always returns exact figures with a full breakdown and
 the applicable excess. This is the reliable path for a precise quote.
 
 Database. A transparency surface that lets a user browse and run read-only SQL
-against either database: the four-table pricing engine, or the 45-table
+against either database: the four-table pricing engine, or the 46-table
 information engine with its example queries and the data_dictionary of units.
 Results can be filtered, searched, and downloaded as CSV. Only SELECT and WITH
 queries are allowed, on a genuinely read-only connection.

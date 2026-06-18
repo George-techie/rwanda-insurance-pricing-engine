@@ -74,6 +74,7 @@ AUDIT = [
     ("consequential_loss_basis", "Rating for Consequential Loss - basis items (Gross Profit / Auditors Fees / Wages)", "p.24"),
     ("consequential_loss_indemnity_period", "Indemnity Period Selected - Percentages of the Basis Rate", "p.24"),
     ("business_interruption_time_excess", "Voluntary Time Excess under Business Interruption", "p.24"),
+    ("consequential_loss_dual_basis_wages", "Consequential Loss Table for Dual Basis Wages Cover (manual notes: not commonly used)", "p.26"),
     ("burglary_full_value", "Burglary & Theft - Full Value Basis minimum rates", "p.28"),
     ("first_loss_multiplier", "Risks Insured on First Loss Basis - multipliers", "p.28"),
     ("bankers_blanket_bond", "Bankers Blanket Bond - Description of Risk / Rate", "p.31"),

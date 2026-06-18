@@ -406,7 +406,7 @@ with tab_db:
     db_choice = st.radio(
         "Database",
         ["Pricing engine · assar.db (4 tables)",
-         "Information engine · assar_info.db (45 tables)"],
+         "Information engine · assar_info.db (46 tables)"],
         horizontal=True,
     )
     is_info = db_choice.startswith("Information")
