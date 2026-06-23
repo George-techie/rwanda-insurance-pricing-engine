@@ -128,6 +128,15 @@ class Retriever:
         if self.hybrid:
             self._build_bm25()
 
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        """Normalised embeddings for arbitrary text, sharing this retriever's
+        model (so the table catalog reuses it instead of loading a second copy)."""
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+
+            self._model = SentenceTransformer(self.model_name)
+        return self._model.encode(texts, normalize_embeddings=True).tolist()
+
     def _build_bm25(self):
         from rank_bm25 import BM25Okapi
 
