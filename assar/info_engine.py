@@ -164,32 +164,47 @@ class _Catalog:
         vecs = get_retriever().encode([desc[n] for n in names])
         self._emb = dict(zip(names, vecs))
 
-    def match(self, query: str) -> tuple[str | None, float]:
-        """Best-matching table = semantic cosine + a lexical bonus for how many of
-        the table's title/column tokens appear in the query. The lexical term is
-        what makes 'transit ... road accident ... containerized' land squarely on
-        goods_in_transit rather than a semantically-nearby table."""
+    def best(self, text: str) -> tuple[str | None, float, int]:
+        """(table, score, lexical_overlap) for `text`. Score = semantic cosine +
+        a lexical bonus for how many of the table's title/column tokens appear in
+        the text; the lexical term is what makes 'transit ... road accident ...
+        containerized' land squarely on goods_in_transit."""
         self._ensure()
         from .rag.retriever import get_retriever
 
-        qv = get_retriever().encode([query])[0]
-        qtok = _toks(query)
+        qv = get_retriever().encode([text])[0]
+        qtok = _toks(text)
         toks = _table_tokens()
-        best, best_score = None, -1.0
+        best, best_score, best_ov = None, -1.0, 0
         for name, vec in self._emb.items():
             cos = sum(a * b for a, b in zip(qv, vec))
             overlap = len(toks[name] & qtok)
             score = cos + 0.05 * min(overlap, 6)
             if score > best_score:
-                best, best_score = name, score
-        return (best, best_score) if best_score >= MATCH_MIN else (None, best_score)
+                best, best_score, best_ov = name, score, overlap
+        return best, best_score, best_ov
 
 
 _CATALOG = _Catalog()
 
 
-def match_table(query: str) -> str | None:
-    return _CATALOG.match(query)[0]
+def match_table(query: str, context: str = "") -> str | None:
+    """Match a request to a table, current query FIRST.
+
+    If the current query itself names a cover (lexical overlap with a table) and
+    matches confidently, that wins outright; conversation `context` is ignored.
+    This stops a prior turn (a greeting that lists every class, or a previously
+    rendered table) from overriding an explicit request like 'a table of fire
+    rates'. Only a subjectless follow-up ('a table of the options I have') falls
+    back to query + context."""
+    name_q, score_q, overlap_q = _CATALOG.best(query)
+    if overlap_q >= 1 and score_q >= MATCH_MIN:
+        return name_q
+    if context.strip():
+        name_c, score_c, _ = _CATALOG.best(f"{query} {context}")
+        if score_c >= MATCH_MIN:
+            return name_c
+    return name_q if score_q >= MATCH_MIN else None
 
 
 def _fmt(value) -> str:

@@ -213,13 +213,17 @@ def _wants_table(query: str) -> bool:
     return bool(_TABLE_SOFT.search(query) and _RATE_WORD.search(query))
 
 
-def _table_match_text(query: str, history) -> str:
-    """Query plus a little recent context, so a follow-up like 'a table of the
-    options I have' inherits the subject (e.g. petrol in transit) from earlier turns."""
-    parts = [query]
+def _table_context(history) -> str:
+    """Recent conversation context for a subjectless table follow-up. Skips
+    previously rendered tables (long assistant turns) so a wrong earlier table
+    cannot feed back and bias the next match."""
+    parts = []
     for role, content in reversed(history or []):
-        if content:
-            parts.append(content)
+        if not content:
+            continue
+        if role == "assistant" and len(content) > 600:  # a rendered table; ignore
+            continue
+        parts.append(content)
         if len(parts) >= 4:
             break
     return " ".join(parts)
@@ -278,7 +282,7 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
     # manual's tables and render it deterministically. No LLM, no fabrication;
     # works even with no LLM configured.
     if _wants_table(query):
-        table = match_table(_table_match_text(query, history))
+        table = match_table(query, _table_context(history))
         rendered = render_markdown(table) if table else None
         if rendered:
             result.answer = rendered
