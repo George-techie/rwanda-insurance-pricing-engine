@@ -44,13 +44,15 @@ retrieved differently, and a language model orchestrates but never computes.
 
 A free-text question first reaches a Manager/router that classifies it. If it
 is a pricing or number request, it is sent to the Quant layer: typed Python
-calculators that read exact rates from SQLite and compose the premium, plus
-text-to-SQL lookups against the per-table information database. If it is a
-concept question, it is sent to the Retriever, which performs semantic search
-over the manual's prose. The language model then composes a final answer,
-citing manual pages and showing the exact rates used; a Verifier step checks
-the unit of each figure (percent vs per-mille vs franc amount) and that prose
-claims are grounded in retrieved passages.
+calculators that read exact rates from SQLite and compose the premium. If it is
+a table or comparison request, the relevant table in the per-table information
+database is matched and rendered directly from SQL. If it is a concept question,
+it is sent to the Retriever, which performs hybrid search (dense vectors plus
+BM25 keywords) with cross-encoder reranking over the manual's prose. The language
+model then composes a final answer with page citations; a grounding check
+enforced in code ensures no rate or amount reaches the user unless it appears in
+a calculator result or a retrieved passage, so the unit of each figure (percent
+vs per-mille vs franc amount) cannot be silently invented.
 
 ```
                           +-----------------------------+
@@ -63,8 +65,8 @@ claims are grounded in retrieved passages.
                             v                          v
               +----------------------------+  +----------------------------+
               |   Quant  (typed Python)    |  |   Retriever  (ChromaDB)    |
-              |  pricing calculators +     |  |  semantic search over the  |
-              |  read-only text-to-SQL     |  |  manual prose (embeddings) |
+              |  pricing calculators +     |  |  dense + BM25 hybrid, then  |
+              |  info-engine tables        |  |  cross-encoder reranking    |
               +-------------+--------------+  +-------------+--------------+
                             |                               |
                             v                               v
@@ -159,23 +161,42 @@ only definitions, conditions, warranties, and guidance.
 ## 5. Retrieval Strategy
 
 Concept questions are answered by retrieval-augmented generation over the prose
-corpus. Chunks are embedded locally with a sentence-transformers model
-(BAAI/bge-small-en-v1.5; a multilingual model is a drop-in for Kinyarwanda or
-French) and stored in a persistent ChromaDB collection using cosine similarity.
-At query time the same model embeds the question, the top matches are fetched,
-and the language model composes an answer grounded in those passages with page
-citations. The retrieved section title and page travel with each result, so an
-answer can point the reader to the exact place in the manual.
+corpus, through a staged pipeline whose individual levers can be toggled and
+measured; the reasoning behind each is documented in docs/RETRIEVAL.md. Chunks
+are embedded locally with a sentence-transformers model (BAAI/bge-base-en-v1.5;
+a multilingual model is a drop-in for Kinyarwanda or French) and stored in a
+persistent ChromaDB collection using cosine similarity.
 
-The router is hybrid. Number and quote questions are routed to the Quant layer,
-which either calls a typed pricing calculator or runs a read-only SQL lookup
-against the information database; concept questions are routed to the retriever.
-Lookups are made robust with scheme-scoped fuzzy matching, so an approximate
-category such as "hotel" resolves to the valid key, and the dispatcher coerces
-string numbers and drops arguments a calculator does not accept. The model is
-restricted to general (non-life) business and declines motor, life, or medical
-questions rather than inventing a quote. The conversation is multi-turn: prior
-turns are passed back so a follow-up like "and for a bank?" keeps context.
+Retrieval combines three stages. A hybrid first stage runs dense vector search
+and BM25 keyword search over the same chunks and fuses their rankings with
+Reciprocal Rank Fusion, so meaning-based matches and exact-term matches (an
+acronym such as ICC-A, or a word such as reinsurance) both surface. A
+cross-encoder reranker (ms-marco-MiniLM-L-6-v2) then re-scores the shortlist by
+reading the question and each passage together, which lifts the single most
+relevant passage to the top. An optional multi-query expansion stage can rewrite
+the question into paraphrases; it is off by default because it spends model
+tokens. Each stage is an environment toggle, and quality is measured rather than
+assumed: an evaluation harness reports recall@k and MRR@k for the dense, hybrid,
+and reranked configurations over a labelled question set. The retrieved section
+title and page travel with each result, so an answer can point the reader to the
+exact place in the manual.
+
+The router itself is also hybrid by question type. Number and quote questions go
+to the Quant layer, which calls a typed pricing calculator. A request for a table
+or comparison is matched to one of the manual's tables in the information
+database, using the same embeddings and reading recent conversation turns, and
+rendered directly from SQL. Concept questions go to the retriever. Lookups are
+made robust with scheme-scoped fuzzy matching, so an approximate category such as
+"hotel" resolves to the valid key, and the dispatcher coerces string numbers and
+drops arguments a calculator does not accept.
+
+Grounding is enforced in code, not left to the model: no rate, percentage or
+amount is shown unless that exact figure appears in a calculator result or a
+retrieved passage, and anything ungrounded is replaced with an honest request for
+the specific cover and sum insured. The model is restricted to general (non-life)
+business and declines motor, life, or medical questions rather than inventing a
+quote. The conversation is multi-turn: prior turns are passed back so a follow-up
+like "and for a bank?" keeps context.
 
 ---
 
@@ -221,16 +242,21 @@ the source manual before binding cover.
 
 Chat. The primary, client-facing surface is a multi-turn chat with conversation
 memory and a strip of product tiles showing the classes covered. A question is
-classified and routed by question type. Quote answers show a card with the
-product, the exact rate and unit, and the final premium, with a collapsible
-breakdown; their evidence is the rate table read by the calculator, so quote
-turns do not attach prose passages. Concept answers are instead grounded in
-retrieved manual passages shown with page citations. If the user asks for a
-rate or a premium without giving a sum insured, the assistant states the rate
-and asks for the amount rather than assuming one. Because it remembers the
-conversation, follow-up questions work naturally. It can quote every class in
-the manual that has a calculator, twenty-one tools in all; out-of-scope
-questions are politely declined.
+classified and routed by question type. Quote answers show the full working
+inline as a step-by-step table (sum insured, rate, gross, discounts, net, policy
+fee, final), so an underwriter or client can follow the arithmetic without
+opening anything; the evidence is the rate table read by the calculator. A
+request for a table or comparison is answered by matching it to one of the
+manual's tables and rendering it from SQL, with the manual's verbatim labels and
+correct units, which lets an underwriter compare rates across risks side by side.
+Concept answers are grounded in retrieved manual passages shown with page
+citations. No rate or amount is ever shown unless it is grounded in a calculator
+result or a retrieved passage; an ungrounded figure is replaced with a request
+for the specific cover and sum insured, and if a sum insured is missing the
+assistant states the rate and asks for the amount rather than assuming one.
+Because it remembers the conversation, follow-up questions work naturally. It can
+quote every class in the manual that has a calculator, twenty-one tools in all;
+out-of-scope questions are politely declined.
 
 Get a Quote. A deterministic calculator with dropdowns for the main products. It
 bypasses the language model entirely and calls the typed calculators directly,
