@@ -18,7 +18,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from ..pricing.base import rate_table
+from ..info_engine import catalog_titles, match_table, render_markdown
 from ..pricing.registry import TOOL_SCHEMAS, run_tool
 from ..rag.retriever import get_retriever
 from .client import get_client
@@ -192,116 +192,37 @@ category is not in the manual, say so rather than guessing.
 
 
 # --------------------------------------------------------------------------- #
-# Deterministic rate tables (underwriters want side-by-side comparisons)
+# Deterministic comparison tables (underwriters want side-by-side rates)
 # --------------------------------------------------------------------------- #
-# A request like "table of fire rates for the different risks" is answered NOT by
-# the LLM but by reading the SQL rate schedule and rendering a markdown table.
-# Numbers therefore come straight from the manual's rates — no fabrication.
-_TABLE_CUE = re.compile(r"\b(table|tabulate|tabular|compare|comparison|breakdown|list)\b", re.I)
-_RATE_WORD = re.compile(r"\b(rate|rates|premium|price|pricing|cost)\b", re.I)
-
-# Class word -> scheme key in the `rate` table. First match wins.
-_SCHEME_PATTERNS = [
-    (r"\bfire\b", "fire"),
-    (r"special peril", "special_perils"),
-    (r"political|terroris|\bpvt\b", "pvt"),
-    (r"personal accident|\bp\.?a\b|\bgpa\b", "pa_gpa"),
-    (r"marine hull", "marine_hull"),
-    (r"plate ?glass", "plate_glass"),
-    (r"professional indemnity", "professional_indemnity"),
-    (r"public liabilit", "public_liability"),
-    (r"product liabilit", "product_liability"),
-    (r"employer", "employers_liability"),
-    (r"director|d\s*&\s*o|d and o", "do_liability"),
-    (r"school", "school_liability"),
-    (r"fidelity", "fidelity"),
-    (r"aviation", "aviation"),
-    (r"boiler", "boiler"),
-    (r"machinery", "machinery"),
-    (r"\bcpm\b|plant and machinery", "cpm"),
-    (r"erection|\beear?\b|electronic equipment", "eear"),
-    (r"\bear\b|\bcar\b|contractor", "ear_car"),
-    (r"\bbbb\b|bankers? blanket", "bbb"),
-    (r"\bbond\b|guarantee", "bond"),
-    (r"money", "money"),
-]
-
-_SCHEME_TITLES = {
-    "fire": "Fire & Allied Perils",
-    "special_perils": "Special Perils",
-    "pvt": "PVT (Political Violence & Terrorism)",
-    "pa_gpa": "Personal Accident / Group Personal Accident",
-    "marine_hull": "Marine Hull",
-    "plate_glass": "Plate Glass",
-    "professional_indemnity": "Professional Indemnity",
-    "public_liability": "Public Liability",
-    "product_liability": "Product Liability",
-    "employers_liability": "Employers Liability",
-    "do_liability": "Directors & Officers Liability",
-    "school_liability": "School Liability",
-    "fidelity": "Fidelity Guarantee",
-    "aviation": "Aviation",
-    "boiler": "Boiler & Pressure Vessels",
-    "machinery": "Machinery Breakdown",
-    "cpm": "Contractors Plant & Machinery",
-    "ear_car": "Erection / Contractors All Risks",
-    "eear": "Electronic Equipment / EAR",
-    "bbb": "Bankers Blanket Bond",
-    "bond": "Bonds & Guarantees",
-    "money": "Money",
-}
+# A request like "table of fire rates" or "compare the transit options" is
+# answered NOT by the LLM but by matching it to one of the 45 verbatim tables in
+# assar_info.db (see assar/info_engine.py) and rendering it from SQL. The numbers
+# come straight from the manual, so a rendered table cannot be fabricated, and
+# every cover is reachable with no per-scheme hard-coding.
+_TABLE_STRONG = re.compile(
+    r"\b(table|tabulate|tabular|compare|comparison|matrix|side[-\s]?by[-\s]?side)\b", re.I)
+_TABLE_SOFT = re.compile(r"\b(list|options|breakdown|different|various|range of|all the)\b", re.I)
+_RATE_WORD = re.compile(r"\b(rate|rates|premium|premiums|price|pricing|cost|costs)\b", re.I)
 
 
-def _scheme_from_query(text: str) -> str | None:
-    for pat, scheme in _SCHEME_PATTERNS:
-        if re.search(pat, text, re.I):
-            return scheme
-    return None
+def _wants_table(query: str) -> bool:
+    """Trigger the table path on an explicit table/comparison cue, or on a softer
+    cue ('options', 'different', 'list') combined with a rate word."""
+    if _TABLE_STRONG.search(query):
+        return True
+    return bool(_TABLE_SOFT.search(query) and _RATE_WORD.search(query))
 
 
-def _wants_rate_table(query: str) -> bool:
-    """A table/comparison request that is about rates of a class of business."""
-    if not _TABLE_CUE.search(query):
-        return False
-    return bool(_scheme_from_query(query)) or bool(_RATE_WORD.search(query))
-
-
-def _fmt_rate(v) -> str:
-    return "" if v is None else f"{round(float(v), 4):g}"
-
-
-def _render_rate_table(scheme: str) -> str | None:
-    rows = rate_table(scheme)
-    if not rows:
-        return None
-    title = _SCHEME_TITLES.get(scheme, scheme.replace("_", " ").title())
-    unit = rows[0]["unit"]
-    unit_lbl = "per mille" if unit == "per_mille" else "%"
-    has_alt = any(r["rate_alt"] is not None and r["rate_alt"] != r["rate"] for r in rows)
-
-    out = [f"**{title}: rate table**  \n_{len(rows)} categories; rate shown as "
-           f"{unit_lbl} of the sum insured, read directly from the manual schedule._", ""]
-    if scheme == "fire":
-        c1, c2 = f"Standard Fire ({unit_lbl})", f"Fire + All Special Perils ({unit_lbl})"
-    else:
-        c1, c2 = f"Rate ({unit_lbl})", f"Alt. rate ({unit_lbl})"
-
-    if has_alt:
-        out.append(f"| Occupancy / Risk | {c1} | {c2} |")
-        out.append("|---|---:|---:|")
-        for r in rows:
-            cat = r["category"].replace("_", " ").title()
-            out.append(f"| {cat} | {_fmt_rate(r['rate'])} | {_fmt_rate(r['rate_alt'])} |")
-    else:
-        out.append(f"| Category | {c1} |")
-        out.append("|---|---:|")
-        for r in rows:
-            cat = r["category"].replace("_", " ").title()
-            out.append(f"| {cat} | {_fmt_rate(r['rate'])} |")
-
-    out += ["", "Give me a specific occupancy and a sum insured and I'll compute the "
-            "exact premium."]
-    return "\n".join(out)
+def _table_match_text(query: str, history) -> str:
+    """Query plus a little recent context, so a follow-up like 'a table of the
+    options I have' inherits the subject (e.g. petrol in transit) from earlier turns."""
+    parts = [query]
+    for role, content in reversed(history or []):
+        if content:
+            parts.append(content)
+        if len(parts) >= 4:
+            break
+    return " ".join(parts)
 
 
 @dataclass
@@ -353,23 +274,20 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
     client = get_client()
     result = RouterResult(answer="", retrieved=retrieved, backend=client.config.backend)
 
-    # Rate-table / comparison request -> answer deterministically from the SQL
-    # rate schedule (no LLM, no fabrication). Works even with no LLM configured.
-    if _wants_rate_table(query):
-        scheme = _scheme_from_query(query)
-        if scheme:
-            table = _render_rate_table(scheme)
-            if table:
-                result.answer = table
-                return result
-        else:
-            result.answer = (
-                "I can show a rate comparison table for a specific class. Which one? "
-                "For example: fire, PVT, personal accident, marine hull, public "
-                "liability, professional indemnity, plate glass, fidelity, aviation, "
-                "boiler or machinery."
-            )
+    # Table / comparison request -> match it (with recent context) to one of the
+    # manual's tables and render it deterministically. No LLM, no fabrication;
+    # works even with no LLM configured.
+    if _wants_table(query):
+        table = match_table(_table_match_text(query, history))
+        rendered = render_markdown(table) if table else None
+        if rendered:
+            result.answer = rendered
             return result
+        result.answer = (
+            "I can show a comparison table for any cover in the manual. Which one? "
+            "For example: " + ", ".join(catalog_titles(10)) + "."
+        )
+        return result
 
     if not client.ready:
         # No model configured — still useful: hand back the grounded prose.

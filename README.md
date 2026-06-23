@@ -1,10 +1,12 @@
 # ASSAR Pricing Assistant
 
 A pricing and information tool built over ASSAR's Approved General Business
-Pricing Manual for the Rwandan Insurance Industry (Version 3). It answers
-underwriting questions and produces premium quotes through a Streamlit
-interface, using SQL lookups for the manual's numbers and semantic search over
-its prose.
+Pricing Manual for the Rwandan Insurance Industry (Version 3). Through a
+Streamlit chat it answers underwriting questions, produces deterministic premium
+quotes with a step-by-step breakdown, and renders side-by-side rate comparison
+tables. It combines SQL lookups for the manual's numbers with reranked hybrid
+search over its prose, and it will not state a rate that is not grounded in the
+manual.
 
 ## Why a hybrid of SQL and retrieval
 
@@ -19,14 +21,16 @@ ways.
 Premiums are computed by typed Python functions in `assar/pricing/` that read
 exact rates from SQLite. The language model does not do the arithmetic. It
 extracts the parameters, calls a pricing function, and phrases the result, which
-keeps quotes deterministic. The pricing code is covered by 33 tests in `tests/`.
+keeps quotes deterministic. The pricing code is covered by 39 tests in `tests/`.
 
 ```
-free-text query -> router -> pricing tools -> SQLite rates -> deterministic premium
-                        \--> vector search -> manual prose  -> grounded explanation
+free-text query -> router -> pricing tools  -> SQLite rates -> deterministic premium
+                        |--> table request   -> assar_info.db -> rendered comparison table
+                        \--> hybrid search + rerank -> manual prose -> grounded answer
                                                   |
                                                   v
-                                   LLM composes a cited answer
+                                LLM composes a grounded answer
+                                (no ungrounded figures allowed)
 ```
 
 The Get a Quote tab bypasses the model and calls the calculators directly, so
@@ -40,11 +44,56 @@ for different uses.
 
 - `data/assar.db`: four generic tables (`rate`, `transit_rate`, `schedule`,
   `product_rule`) that the pricing calculators read.
-- `data/assar_info.db`: one table per table in the manual (45 in total), named
-  and shaped for a text-to-SQL agent answering plain questions such as "what is
-  the fire rate for a bank". A `data_dictionary` table records the unit of every
-  column, so a percentage is never confused with a per-mille rate or a franc
-  amount.
+- `data/assar_info.db`: one table per table in the manual (45 data tables plus a
+  `data_dictionary`), named and shaped so a plain question such as "what is the
+  fire rate for a bank" can be answered from SQL. The `data_dictionary` records
+  the unit of every column, so a percentage is never confused with a per-mille
+  rate or a franc amount. The chat reads this database directly to render
+  comparison tables (see below).
+
+## Retrieval
+
+Prose retrieval is a staged pipeline; the levers and the reasoning behind them
+are documented in `docs/RETRIEVAL.md`.
+
+- Embeddings: `BAAI/bge-base-en-v1.5` (768 dimensions), run locally through
+  `sentence-transformers`.
+- Hybrid first stage: dense vector search (ChromaDB) and BM25 keyword search over
+  the same chunks, combined with Reciprocal Rank Fusion. Dense catches meaning,
+  BM25 catches exact terms such as "reinsurance" or "ICC-A".
+- Reranking: a cross-encoder (`ms-marco-MiniLM-L-6-v2`) re-scores the shortlist
+  by reading the query and each passage together, so the most relevant passage
+  ranks first.
+- Optional multi-query expansion (off by default; uses the LLM).
+
+Each stage is an environment toggle (`RAG_HYBRID`, `RAG_RERANK`,
+`RAG_EXPANSION`). Quality is measured, not assumed:
+
+```bash
+python -m assar.rag.eval --compare   # recall@k / MRR@k: dense vs hybrid vs reranked
+```
+
+## Trustworthy answers
+
+A small model will invent plausible-looking rates if allowed to, which is the one
+failure an underwriting tool cannot have. The chat enforces grounding in code,
+not by prompting: no rate, percentage or amount reaches the user unless that
+exact number appears in a tool result or a retrieved manual excerpt. Anything
+else is replaced with an honest request for the specific cover and sum insured.
+Coverage and definition questions are answered extractively from the retrieved
+passages, and a quote always shows its working (sum insured, rate, gross,
+discounts, net, policy fee, final).
+
+## Comparison tables
+
+Asking for a table or comparison, for example "compare the goods-in-transit
+options" or "table of fire rates for the different risks", matches the request to
+one of the manual's tables in `assar_info.db`. The match uses the same embeddings
+as retrieval and reads recent conversation turns, so a follow-up like "a table of
+the options I have" inherits its subject from earlier in the chat. The chosen
+table is rendered from SQL with the manual's verbatim labels and correct units.
+Because the numbers come straight from the database, a rendered table cannot be
+fabricated, and every cover is reachable with no per-scheme hard-coding.
 
 ## Setup
 
@@ -86,7 +135,10 @@ Set `LLM_BACKEND` in `.env`:
 - `hf`: Hugging Face Inference Providers. Set `HF_TOKEN`.
 
 Embeddings run locally through `sentence-transformers` (default
-`BAAI/bge-small-en-v1.5`; use `BAAI/bge-m3` for Kinyarwanda or French).
+`BAAI/bge-base-en-v1.5`; use `BAAI/bge-m3` for Kinyarwanda or French). Changing
+`EMBED_MODEL` changes the vector dimension, so re-run `python -m assar.ingest`
+after a change. The retrieval toggles (`RAG_HYBRID`, `RAG_RERANK`,
+`RAG_EXPANSION`, and so on) are listed in `.env.example`.
 
 ## Inspecting the database
 
@@ -108,7 +160,7 @@ SQLite viewer. For the information-engine database, point the same tools at
 ## Tests
 
 ```bash
-pytest -q        # 33 deterministic pricing tests
+pytest -q        # 39 deterministic pricing tests
 ```
 
 ## Project layout
@@ -126,18 +178,21 @@ assar/
     transit.py          GIT / transporters liability / marine cargo
     products.py         liability, PA/GPA, bonds, PVT, engineering, machinery, CPM
     registry.py         calculator registry + LLM tool schemas
+  info_engine.py        catalog over assar_info.db: match a request to a table + render it
   rag/
     build_corpus.py     extract prose from the PDF -> data/corpus.md
     ingest.py           section-aware chunking + embed -> ChromaDB
-    retriever.py        similarity search
+    retriever.py        hybrid search (dense + BM25, RRF) + cross-encoder rerank
+    eval.py             recall@k / MRR@k harness for comparing retrieval configs
   llm/
     client.py           pluggable Groq / Ollama / HF client
-    router.py           tool-calling + retrieval + synthesis
-app.py                  Streamlit UI (Ask, Get a Quote, Database tabs)
+    router.py           routing, retrieval, tool-calling, grounding guards
+app.py                  Streamlit UI (Chat, Get a Quote, Database tabs)
 demo_agent.py           small multi-agent CLI over data/assar_info.db
 inspect_db.py           CLI to print/export the rate tables
 make_report.py          generates data/PROJECT_REPORT.pdf (no dependencies)
-tests/test_pricing.py   33 tests
+docs/                   RETRIEVAL.md, CALCULATORS.md (and PDFs)
+tests/test_pricing.py   39 tests
 data/                   assar.db, assar_info.db, corpus.md, chroma/  (generated)
 ```
 
