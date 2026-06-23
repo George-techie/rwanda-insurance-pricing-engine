@@ -1,10 +1,17 @@
 """Chunk the prose corpus and build the ChromaDB vector store.
 
 Embeddings are computed locally with sentence-transformers (no API needed).
-Default model is bge-small-en-v1.5 (fast, CPU-friendly). For Kinyarwanda/French
-content switch EMBED_MODEL to BAAI/bge-m3 (multilingual, hybrid dense+sparse).
+Default model is bge-base-en-v1.5 (768-d, stronger than -small at ~3x size,
+still CPU-friendly). Override with EMBED_MODEL:
+  - BAAI/bge-small-en-v1.5   384-d, fastest, lowest quality (the old default)
+  - BAAI/bge-base-en-v1.5    768-d, the new default (better recall)
+  - BAAI/bge-large-en-v1.5   1024-d, best English quality, heavier
+  - BAAI/bge-m3              multilingual (Kinyarwanda/French), hybrid-capable
 
-Run once on your machine (downloads the embedding model on first use):
+Tune chunking with CHUNK_TARGET (chars) and CHUNK_OVERLAP (chars).
+
+IMPORTANT: changing the embedding model changes the vector dimension, so you
+MUST re-ingest (this script DROPs and recreates the collection):
     python -m assar.ingest
 """
 from __future__ import annotations
@@ -17,7 +24,9 @@ DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 CORPUS_PATH = DATA_DIR / "corpus.md"
 CHROMA_DIR = DATA_DIR / "chroma"
 COLLECTION = "assar_manual"
-EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
+EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-base-en-v1.5")
+CHUNK_TARGET = int(os.getenv("CHUNK_TARGET", "1600"))
+CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "200"))
 
 
 def _upper_ratio(s: str) -> float:
@@ -135,7 +144,7 @@ def _split_section(title: str, lines: list[tuple[int, str]],
     return out
 
 
-def chunk_corpus(text: str, target_chars: int = 1600, overlap: int = 200) -> list[dict]:
+def chunk_corpus(text: str, target_chars: int = CHUNK_TARGET, overlap: int = CHUNK_OVERLAP) -> list[dict]:
     """Structure-aware chunking: split by the manual's section headings, keep
     each section's body together (even across page breaks), sub-split long
     sections on sentence boundaries, and prefix every chunk with its section
@@ -160,7 +169,9 @@ def ingest(corpus_path: Path = CORPUS_PATH, persist_dir: Path = CHROMA_DIR) -> i
 
     text = corpus_path.read_text(encoding="utf-8")
     chunks = chunk_corpus(text)
-    print(f"Chunked corpus into {len(chunks)} pieces; embedding with {EMBED_MODEL} ...")
+    print(f"Chunked corpus into {len(chunks)} pieces "
+          f"(target={CHUNK_TARGET}, overlap={CHUNK_OVERLAP}); "
+          f"embedding with {EMBED_MODEL} ...")
 
     model = SentenceTransformer(EMBED_MODEL)
     embeddings = model.encode(
