@@ -106,23 +106,67 @@ st.caption("Pricing and guidance over the Rwandan Insurance Industry Pricing "
 tab_ask, tab_quote, tab_db = st.tabs(["Chat", "Get a Quote", "Database"])
 
 
+def _money(x):
+    try:
+        return f"Rwf{float(x):,.0f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def render_quote_card(r):
+    """Visible, step-by-step quote breakdown shown inline (no hidden expander).
+
+    Leads with a plain-language flow table (sum insured -> rate -> gross ->
+    adjustments -> net -> fee -> final) so an underwriter or client can follow
+    the arithmetic, then lists the detailed working from the calculator and any
+    excess / warnings."""
+    rate = r.get("rate")
+    unit = r.get("rate_unit", "percent")
+    unit_lbl = " per mille" if unit == "per_mille" else "%"
+    gross = r.get("gross_premium", 0) or 0
+    net = r.get("net_premium", 0) or 0
+    fee = r.get("policy_fee", 0) or 0
+    final = r.get("final_premium", 0) or 0
+    si = r.get("sum_insured")
+    product = (r.get("product") or "").replace("_", " ").title()
+
+    rows = []
+    if si is not None:
+        rows.append(("Sum insured", _money(si)))
+    if rate is not None:
+        rows.append(("Rate applied", f"{round(float(rate), 6):g}{unit_lbl}"))
+    rows.append(("Gross premium", _money(gross)))
+    adj = net - gross
+    if abs(adj) >= 1:
+        sign = "-" if adj < 0 else "+"
+        rows.append(("Discounts / adjustments", f"{sign}{_money(abs(adj))}"))
+        rows.append(("Net premium", _money(net)))
+    if fee:
+        rows.append(("Policy fee", f"+{_money(fee)}"))
+    rows.append(("**Final premium**", f"**{_money(final)}**"))
+
+    if product:
+        st.markdown(f"**{product}**")
+    table = "| Step | Amount |\n|---|---:|\n" + "\n".join(f"| {k} | {v} |" for k, v in rows)
+    st.markdown(table)
+
+    lines = r.get("breakdown", [])
+    if lines:
+        st.markdown("**How it's worked out**")
+        st.markdown("\n".join(f"{i}. {ln}" for i, ln in enumerate(lines, 1)))
+    if r.get("excess"):
+        st.info(f"Excess / deductible: {r['excess']}")
+    for w in r.get("warnings", []):
+        st.caption(f"Note: {w}")
+
+
 # Shared renderer for an assistant turn's quote cards + cited sources.
 def render_details(tool_calls, retrieved):
     for tc in tool_calls or []:
         r = tc["result"]
         if "error" in r:
             continue  # don't surface failed/spurious tool calls; the text answer stands
-        c = st.columns(3)
-        c[0].metric("Product", r.get("product", "-"))
-        c[1].metric("Rate", f"{r.get('rate')} {r.get('rate_unit', '%')}")
-        c[2].metric("Final premium", f"Rwf{r.get('final_premium', 0):,.0f}")
-        with st.expander("Breakdown"):
-            for line in r.get("breakdown", []):
-                st.text(line)
-            if r.get("excess"):
-                st.caption(f"Excess: {r['excess']}")
-            for w in r.get("warnings", []):
-                st.caption(f"Note: {w}")
+        render_quote_card(r)
     if retrieved:
         with st.expander(f"Sources: {len(retrieved)} manual passage(s)"):
             for c in retrieved:
@@ -195,17 +239,7 @@ with tab_ask:
 # Get a Quote tab — deterministic, no LLM
 # --------------------------------------------------------------------------- #
 def show_quote(q):
-    cols = st.columns(3)
-    cols[0].metric("Gross premium", f"Rwf{q.gross_premium:,.0f}")
-    cols[1].metric("Net premium", f"Rwf{q.net_premium:,.0f}")
-    cols[2].metric("FINAL premium", f"Rwf{q.final_premium:,.0f}")
-    st.markdown("**Breakdown**")
-    for line in q.as_dict()["breakdown"]:
-        st.text(line)
-    if q.excess:
-        st.info(f"Excess / deductible: {q.excess}")
-    for w in q.warnings:
-        st.warning(w)
+    render_quote_card(q.as_dict())
 
 
 with tab_quote:
