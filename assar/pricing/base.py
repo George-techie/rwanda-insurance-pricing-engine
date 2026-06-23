@@ -34,18 +34,36 @@ class Quote:
     def warn(self, msg: str) -> None:
         self.warnings.append(msg)
 
+    def _calc_line(self) -> str | None:
+        """An explicit 'sum insured x rate = premium' line, shown only when the
+        gross premium is a clean single-rate multiply (so it stays accurate;
+        classes with loadings/multipliers already list their own steps)."""
+        if not self.sum_insured or self.rate is None or self.rate_unit == "amount":
+            return None
+        calc = premium_from_rate(self.sum_insured, self.rate, self.rate_unit)
+        if abs(calc - self.gross_premium) >= 1:
+            return None
+        rate = f"{round(self.rate, 6):g}"   # avoid float noise like 0.8775000000000001
+        if self.rate_unit == "per_mille":
+            expr = f"{self.sum_insured:,.0f} x {rate} per mille / 1000"
+        else:
+            expr = f"{self.sum_insured:,.0f} x {rate}% / 100"
+        return f"Calculation: {expr} = {calc:,.0f}"
+
     def as_dict(self) -> dict:
+        line = self._calc_line()
+        breakdown = ([line] + self.lines) if line else self.lines
         return {
             "product": self.product,
             "sum_insured": self.sum_insured,
-            "rate": self.rate,
+            "rate": round(self.rate, 6) if self.rate is not None else None,
             "rate_unit": self.rate_unit,
             "gross_premium": round(self.gross_premium, 2),
             "net_premium": round(self.net_premium, 2),
             "final_premium": round(self.final_premium, 2),
             "policy_fee": self.policy_fee,
             "excess": self.excess,
-            "breakdown": self.lines,
+            "breakdown": breakdown,
             "warnings": self.warnings,
         }
 
@@ -116,6 +134,27 @@ def list_categories(scheme: str, conn=None) -> list[str]:
             "SELECT category FROM rate WHERE scheme=? ORDER BY category", (scheme,)
         ).fetchall()
         return [r["category"] for r in rows]
+    finally:
+        if own:
+            conn.close()
+
+
+def rate_table(scheme: str, conn=None) -> list[dict]:
+    """All rate rows for a scheme, ordered by rate then name (so equal rates
+    group together for comparison). Read straight from the manual's rate
+    schedule — the source for deterministic, non-fabricated rate tables."""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        rows = conn.execute(
+            "SELECT category, rate, rate_alt, unit, note FROM rate WHERE scheme=? "
+            "ORDER BY rate, category", (scheme,)
+        ).fetchall()
+        return [
+            {"category": r["category"], "rate": r["rate"], "rate_alt": r["rate_alt"],
+             "unit": r["unit"], "note": r["note"]}
+            for r in rows
+        ]
     finally:
         if own:
             conn.close()

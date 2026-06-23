@@ -43,10 +43,14 @@ def quote_fire(
             load = product_rule("fire", "industrial_load", 0.025, conn=conn)
             process_portion = premium_from_rate(sum_insured, load)
             ext_load = product_rule("fire", "industrial_ext_load", 25_000, conn=conn)
-            q.add(f"Industrial process loading +{load}% = {process_portion:,.0f}")
-            q.add(f"Industrial extensions flat loading = {ext_load:,.0f}")
+            q.add(f"Fire portion: {sum_insured:,.0f} x {base_rate:g}% = {fire_portion:,.0f}")
+            q.add(f"Industrial process: {sum_insured:,.0f} x {load:g}% = {process_portion:,.0f}")
+            q.add(f"Industrial extensions: + {ext_load:,.0f}")
 
         q.gross_premium = fire_portion + process_portion + ext_load
+        if industrial:
+            q.add(f"Gross = {fire_portion:,.0f} + {process_portion:,.0f} + {ext_load:,.0f} "
+                  f"= {q.gross_premium:,.0f}")
 
         # FEA discount: fire portion only (not process loading / perils / extensions)
         net = q.gross_premium

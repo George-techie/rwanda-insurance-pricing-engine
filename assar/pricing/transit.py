@@ -73,8 +73,10 @@ def quote_git(
               f"{'containerized' if containerized else 'non-containerized'}): {rate}%")
 
         if transporters_liability and outside_rwanda:
+            base = rate
             rate *= 1.30
-            q.add("Transport outside Rwanda -> +30% loading")
+            q.add(f"Transport outside Rwanda +30%: {round(base, 6):g}% x 1.30 = "
+                  f"{round(rate, 6):g}%")
 
         q.rate = rate
         q.gross_premium = premium_from_rate(consignment_value, rate)
