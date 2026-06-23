@@ -139,6 +139,27 @@ def list_categories(scheme: str, conn=None) -> list[str]:
             conn.close()
 
 
+def rate_table(scheme: str, conn=None) -> list[dict]:
+    """All rate rows for a scheme, ordered by rate then name (so equal rates
+    group together for comparison). Read straight from the manual's rate
+    schedule — the source for deterministic, non-fabricated rate tables."""
+    own = conn is None
+    conn = conn or connect()
+    try:
+        rows = conn.execute(
+            "SELECT category, rate, rate_alt, unit, note FROM rate WHERE scheme=? "
+            "ORDER BY rate, category", (scheme,)
+        ).fetchall()
+        return [
+            {"category": r["category"], "rate": r["rate"], "rate_alt": r["rate_alt"],
+             "unit": r["unit"], "note": r["note"]}
+            for r in rows
+        ]
+    finally:
+        if own:
+            conn.close()
+
+
 def product_rule(product: str, key: str, default=None, conn=None):
     own = conn is None
     conn = conn or connect()
