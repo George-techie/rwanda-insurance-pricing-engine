@@ -228,7 +228,13 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
     if retriever.available:
         try:
             retrieved = retriever.search(_retrieval_query(query, history), k=k)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            # Never silently lose retrieval: an empty context turns every answer
+            # into a refusal, so make the failure visible in the server log.
+            # (A common cause is EMBED_MODEL not matching the ingested store —
+            # re-run `python -m assar.rag.ingest` after changing it.)
+            import sys
+            print(f"[router] retrieval failed: {exc}", file=sys.stderr)
             retrieved = []
     client = get_client()
     result = RouterResult(answer="", retrieved=retrieved, backend=client.config.backend)
