@@ -111,11 +111,15 @@ compact, normalized shape is convenient for the pricing calculators to join and
 iterate in code, and it is what the 39 tests pin.
 
 The second, assar_info.db, inverts the design: one cleanly named SQL table per
-table in the manual, 46 in total. A question such as "what is the fire rate for
-a bank" maps naturally to a query against a fire_allied_perils table with a
-risk_category column, so a text-to-SQL agent does not need to know an internal
-namespacing convention. Descriptive table and column names are, in effect, the
-schema documentation the model reads to ground its query.
+table in the manual, 46 in total. A request such as "fire rates for the
+different risks" corresponds directly to the fire_allied_perils table and its
+risk_category column. Importantly, the assistant does not write SQL from the
+user's words; Section 11 explains why that pattern is avoided. Instead, these
+descriptive names serve two safe purposes: they let the assistant's table
+matcher map a plain-language request to the right table (which is then rendered
+with a fixed, read-only query), and they keep the Database tab self-documenting
+for an analyst browsing the data directly. The clean schema is, in effect, its
+own documentation.
 
 Three further choices shape the data. First, numbers were verified before being
 reused: the rate values were spot-checked cell by cell against the source PDF,

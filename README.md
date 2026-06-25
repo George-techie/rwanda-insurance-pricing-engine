@@ -110,7 +110,8 @@ cp .env.example .env        # then add GROQ_API_KEY (or set LLM_BACKEND=ollama)
 python -m assar.build_db
 
 # 1b. Optional: build the information-engine database, one SQL table per table
-#     in the manual, tuned for a text-to-SQL agent.
+#     in the manual; the chat matches a request to a table and renders it
+#     read-only (the model does not write SQL).
 python -m assar.build_info_tables           # -> data/assar_info.db
 python -m assar.build_info_tables --schema  # print the table/column catalog
 
