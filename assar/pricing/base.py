@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..db import connect
+from ..tenancy import current_insurer
 
 
 # --------------------------------------------------------------------------- #
@@ -98,8 +99,15 @@ def _closest_category(conn, scheme: str, category: str) -> str | None:
     return None
 
 
-def get_rate(scheme: str, category: str, *, alt: bool = False, conn=None) -> tuple[float, str]:
-    """Return (rate, unit) for a scheme/category. `alt` selects the second column."""
+def get_rate(scheme: str, category: str, *, alt: bool = False, conn=None,
+             insurer_id: int | None = None) -> tuple[float, str]:
+    """Return (rate, unit) for a scheme/category. `alt` selects the second column.
+
+    Tenant overlay: if an insurer is in context (or passed explicitly), that
+    insurer's own override of this exact rate wins over the shared base. The
+    insurer id comes from the authenticated context, never from user input, so a
+    request can only ever read the base plus the acting insurer's own overrides.
+    """
     own = conn is None
     conn = conn or connect()
     try:
@@ -112,15 +120,30 @@ def get_rate(scheme: str, category: str, *, alt: bool = False, conn=None) -> tup
             ).fetchone()
 
         row = fetch(category)
+        cat_used = category
         if row is None or row["r"] is None:
             # Exact miss: try a scheme-scoped fuzzy match before giving up.
             snapped = _closest_category(conn, scheme, category)
             if snapped is not None:
                 row = fetch(snapped)
+                cat_used = snapped
         if row is None or row["r"] is None:
             raise RateNotFound(f"No rate for scheme='{scheme}', category='{category}'"
                                f"{' (alt column)' if alt else ''}")
-        return float(row["r"]), row["unit"]
+        rate, unit = float(row["r"]), row["unit"]
+
+        iid = insurer_id if insurer_id is not None else current_insurer()
+        if iid is not None:
+            ov = conn.execute(
+                f"SELECT {col} AS r, unit FROM rate_override "
+                "WHERE insurer_id=? AND scheme=? AND category=?",
+                (iid, scheme, cat_used),
+            ).fetchone()
+            if ov is not None and ov["r"] is not None:
+                rate = float(ov["r"])
+                if ov["unit"]:
+                    unit = ov["unit"]
+        return rate, unit
     finally:
         if own:
             conn.close()

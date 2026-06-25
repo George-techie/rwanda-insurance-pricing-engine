@@ -64,12 +64,39 @@ CREATE TABLE product_rule (
     text        TEXT,
     PRIMARY KEY (product, key)
 );
+
+-- Tenancy: the platform serves several insurers over the one shared ASSAR
+-- schedule. Each insurer may keep private rate overrides that overlay the base
+-- `rate` table for their own pricing only.
+DROP TABLE IF EXISTS rate_override;   -- drop child first (FK to insurer)
+DROP TABLE IF EXISTS insurer;
+CREATE TABLE insurer (
+    id    INTEGER PRIMARY KEY,
+    slug  TEXT NOT NULL UNIQUE,
+    name  TEXT NOT NULL
+);
+
+-- An insurer-specific overlay on `rate`. A non-NULL value here wins over the
+-- base rate for THAT insurer only; absence falls through to the shared base.
+DROP TABLE IF EXISTS rate_override;
+CREATE TABLE rate_override (
+    insurer_id  INTEGER NOT NULL,
+    scheme      TEXT NOT NULL,
+    category    TEXT NOT NULL,
+    rate        REAL,
+    rate_alt    REAL,
+    unit        TEXT,
+    note        TEXT,
+    PRIMARY KEY (insurer_id, scheme, category),
+    FOREIGN KEY (insurer_id) REFERENCES insurer(id)
+);
 """
 
 
 def connect(db_path: Path | str = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")  # enforce the insurer FK at runtime
     return conn
 
 

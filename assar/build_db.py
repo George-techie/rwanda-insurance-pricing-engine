@@ -123,12 +123,29 @@ def build(db_path=DB_PATH) -> None:
                 (product, key, float(value)),
             )
 
+    # Tenancy demo data (synthetic, not from the manual): two insurers, each with
+    # a few private fire-rate overrides that overlay the shared ASSAR base.
+    conn.executemany(
+        "INSERT INTO insurer(id,slug,name) VALUES(?,?,?)",
+        [(1, "radiant", "Radiant Insurance"), (2, "prime", "Prime Insurance")],
+    )
+    conn.executemany(
+        "INSERT INTO rate_override(insurer_id,scheme,category,rate,rate_alt,unit,note) "
+        "VALUES(?,?,?,?,?,?,?)",
+        [
+            (1, "fire", "hotels", 0.10, 0.18, None, "Radiant negotiated fire rate"),
+            (1, "fire", "offices", 0.10, 0.16, None, "Radiant negotiated fire rate"),
+            (2, "fire", "hotels", 0.15, 0.28, None, "Prime loaded fire rate"),
+        ],
+    )
+
     conn.commit()
 
     # Report
     counts = {
         t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-        for t in ("rate", "transit_rate", "schedule", "product_rule")
+        for t in ("rate", "transit_rate", "schedule", "product_rule",
+                  "insurer", "rate_override")
     }
     conn.close()
     print(f"Built {db_path}")

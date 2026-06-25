@@ -24,6 +24,7 @@ from assar.pricing import fire as fire_mod
 from assar.pricing import products as prod_mod
 from assar.pricing import transit as transit_mod
 from assar.db import connect, DB_PATH
+from assar.tenancy import list_insurers, set_current_insurer, current_insurer
 
 st.set_page_config(page_title="ASSAR Pricing Assistant", page_icon="📑", layout="wide")
 
@@ -89,6 +90,23 @@ with st.sidebar:
     except Exception:
         vs_ok = False
     st.write("Vector store:", "✅ built" if vs_ok else "⚠️ run `python -m assar.ingest`")
+
+    st.divider()
+    # Acting insurer (tenancy). Pricing reads this insurer's private overrides
+    # over the shared ASSAR base. In production this comes from the auth token,
+    # not a dropdown; here it is a selector for the demo.
+    try:
+        _insurers = list_insurers()
+    except Exception:
+        _insurers = []
+    _opts = ["ASSAR base (shared)"] + [i["name"] for i in _insurers]
+    _choice = st.selectbox("Acting as insurer", _opts, index=0)
+    _acting = next((i for i in _insurers if i["name"] == _choice), None)
+    set_current_insurer(_acting["id"] if _acting else None)
+    st.session_state["_acting_name"] = _acting["name"] if _acting else None
+    if _acting:
+        st.caption(f"Pricing under **{_acting['name']}** overrides where set "
+                   "(else the shared base).")
 
     st.divider()
     st.caption("⚠️ Rates transcribed from the manual. **Verify against the source "
@@ -158,6 +176,9 @@ def render_quote_card(r):
         st.info(f"Excess / deductible: {r['excess']}")
     for w in r.get("warnings", []):
         st.caption(f"Note: {w}")
+    acting = st.session_state.get("_acting_name")
+    if acting:
+        st.caption(f"Priced under {acting} overrides where set (else shared base).")
 
 
 # Shared renderer for an assistant turn's quote cards + cited sources.
