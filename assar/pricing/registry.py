@@ -410,21 +410,34 @@ TOOL_SCHEMAS = [
     },
 ]
 
-# Groq/Llama sometimes emit numeric args as JSON strings ("1000000"), which the
-# provider then rejects against a strict {"type":"number"} schema (400
-# tool_use_failed). Relax every numeric field to accept number OR string; we
-# coerce back to a real number in run_tool().
+# Groq/Llama sometimes emit numeric AND boolean args as JSON strings ("1000000",
+# "true"), which the provider then rejects against a strict {"type":"number"} or
+# {"type":"boolean"} schema (400 tool_use_failed). Relax those fields to accept
+# the type OR string; we coerce back to real values in run_tool().
 for _t in TOOL_SCHEMAS:
     for _p in _t["function"]["parameters"]["properties"].values():
-        if _p.get("type") in ("number", "integer"):
+        if _p.get("type") in ("number", "integer", "boolean"):
             _p["type"] = [_p["type"], "string"]
 
 
+_TRUE = {"true", "yes"}
+_FALSE = {"false", "no"}
+
+
 def _coerce_numbers(args: dict) -> dict:
-    """Turn numeric-looking strings ('1,000,000', '12') into real numbers."""
+    """Turn stringified scalars from the model into real values: 'true'/'false'
+    into booleans, and numeric strings ('1,000,000', '12') into numbers. Note
+    '0'/'1' are kept numeric (not booleans) so enum and amount fields are safe."""
     out = {}
     for k, v in args.items():
         if isinstance(v, str):
+            low = v.strip().lower()
+            if low in _TRUE:
+                out[k] = True
+                continue
+            if low in _FALSE:
+                out[k] = False
+                continue
             s = v.strip().replace(",", "").replace("_", "")
             try:
                 out[k] = int(s) if re.fullmatch(r"-?\d+", s) else float(s)

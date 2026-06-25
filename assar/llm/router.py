@@ -260,6 +260,37 @@ def _retrieval_query(query: str, history) -> str:
     return f"{prior} {query}".strip() if prior else query
 
 
+def _history_messages(history, max_turns: int = 4, max_chars: int = 600) -> list[dict]:
+    """Recent turns for LLM context, kept small. Previously rendered tables (long
+    or many-column markdown) are dropped and long answers are truncated, so
+    replaying history cannot push a request past the model's token limit."""
+    out = []
+    for role, content in (history or []):
+        if role not in ("user", "assistant") or not content:
+            continue
+        if role == "assistant" and (content.count("|") > 12 or len(content) > 1200):
+            continue  # a rendered table / very long answer: noise, not context
+        out.append({"role": role, "content": content[:max_chars]})
+    return out[-(max_turns * 2):]
+
+
+def _is_size_error(exc) -> bool:
+    """A token/rate-limit rejection (e.g. Groq 413 TPM) that dropping history may fix."""
+    s = str(exc).lower()
+    return any(t in s for t in (
+        "rate_limit", "too large", "413", "tokens per minute",
+        "context length", "reduce your message"))
+
+
+def _is_tool_call_error(exc) -> bool:
+    """A malformed tool call from the model (worth one retry; small models emit
+    these intermittently). Groq phrases it a few ways."""
+    s = str(exc).lower()
+    return any(t in s for t in (
+        "tool_use_failed", "tool call validation", "did not match schema",
+        "failed to call a function"))
+
+
 def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None = None) -> RouterResult:
     retriever = get_retriever()
     offer = _offer_tools(query)
@@ -329,11 +360,9 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
         return result
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    # Prior conversation turns (text only) so follow-ups keep context, e.g.
-    # "and for a hotel?" after a fire question. Cap to the last few turns.
-    for role, content in (history or [])[-6:]:
-        if role in ("user", "assistant") and content:
-            messages.append({"role": role, "content": content})
+    # Prior turns for follow-up context, trimmed so a big earlier answer (e.g. a
+    # rendered rate table) cannot bloat this request past the token limit.
+    messages.extend(_history_messages(history))
     if offer:
         # Quote turn: the tool supplies the rate, so we don't feed prose (keeps
         # the model from quoting page numbers inline or saying "no excerpts").
@@ -345,27 +374,38 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
     messages.append({"role": "user", "content": user_content})
 
     tools = TOOL_SCHEMAS if offer else None
+    slim = [messages[0], messages[-1]]   # system + user only: the fallback if too big
     msg = None
     last_exc = None
-    for _ in range(2):  # small models occasionally emit a malformed tool call
-        try:
-            msg = client.chat(messages, tools=tools, tool_choice="auto", temperature=0.0)
-            break
-        except Exception as exc:  # noqa: BLE001
-            last_exc = exc
-            if "tool_use_failed" not in str(exc):
+    attempt = messages
+    for attempt in (messages, slim):
+        for _ in range(2):  # small models occasionally emit a malformed tool call
+            try:
+                msg = client.chat(attempt, tools=tools, tool_choice="auto", temperature=0.0)
                 break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if not _is_tool_call_error(exc):
+                    break
+        if msg is not None or not _is_size_error(last_exc) or attempt is slim:
+            break  # done, or a non-size error (dropping history won't help), or already slim
     if msg is None:
+        rate_limited = _is_size_error(last_exc)
         result.error = f"LLM call failed: {last_exc}"
         result.answer = (
+            "That request exceeded the free-tier model's per-minute token limit. "
+            "Please wait a few seconds and try again, or use the Get a Quote tab "
+            "for an exact premium (it does not call the model)."
+            if rate_limited else
             "I couldn't process that one cleanly just now. Please rephrase it, or "
             "use the Get a Quote tab for an exact premium."
         )
-        tr.add("llm", stage="primary", ok=False, error=str(last_exc))
+        tr.add("llm", stage="primary", ok=False, error=str(last_exc), rate_limited=rate_limited)
         tr.add("final", source="llm_error")
         return result
     tr.add("llm", stage="primary", ok=True, offered_tools=bool(tools),
-           emitted_tool_calls=len(getattr(msg, "tool_calls", None) or []))
+           emitted_tool_calls=len(getattr(msg, "tool_calls", None) or []),
+           slimmed=(attempt is slim))
 
     # Execute any tool calls deterministically.
     tool_messages = []
