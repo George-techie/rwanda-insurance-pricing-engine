@@ -10,6 +10,7 @@ Two modes:
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -18,6 +19,8 @@ import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from assar.trace import log_trace
 
 from assar.pricing.base import list_categories
 from assar.pricing import fire as fire_mod
@@ -196,6 +199,30 @@ def render_details(tool_calls, retrieved):
                 st.caption(c["text"][:400] + ("…" if len(c["text"]) > 400 else ""))
 
 
+def _fmt_step(detail: dict) -> str:
+    parts = []
+    for k, v in detail.items():
+        if k == "hits" and isinstance(v, list):
+            v = "pages " + str([h.get("page") for h in v])
+        elif isinstance(v, (list, dict)):
+            v = json.dumps(v)[:160]
+        parts.append(f"{k}={v}")
+    return ", ".join(parts)
+
+
+def render_trace(trace):
+    """Audit trail: the ordered, observable decisions behind this answer."""
+    if not trace:
+        return
+    steps = trace.to_dict()["steps"] if hasattr(trace, "to_dict") else trace.get("steps", [])
+    fired = any(s["name"] == "grounding_guard" and s.get("fired") for s in steps)
+    label = f"Trace · {len(steps)} steps" + ("  ⚠ grounding guard fired" if fired else "")
+    with st.expander(label):
+        for s in steps:
+            detail = {k: v for k, v in s.items() if k not in ("name", "t_ms")}
+            st.markdown(f"`{s.get('t_ms', 0):>5}ms` **{s['name']}** — {_fmt_step(detail)}")
+
+
 # --------------------------------------------------------------------------- #
 # Ask tab — free text through the router
 # --------------------------------------------------------------------------- #
@@ -227,6 +254,7 @@ with tab_ask:
             st.markdown(m["content"])
             if m["role"] == "assistant":
                 render_details(m.get("tool_calls", []), m.get("retrieved", []))
+                render_trace(m.get("trace"))
 
     # If the latest turn is a user message awaiting a reply, answer it here —
     # below the history and above the input box.
@@ -239,9 +267,13 @@ with tab_ask:
                 res = answer_query(st.session_state.chat[-1]["content"], history=history)
             st.markdown(res.answer or "_(no answer)_")
             render_details(res.tool_calls, res.retrieved)
+            render_trace(res.trace)
+        if res.trace is not None:
+            log_trace(res.trace)   # append this turn to data/traces.jsonl
         st.session_state.chat.append({
             "role": "assistant", "content": res.answer or "",
             "tool_calls": res.tool_calls, "retrieved": res.retrieved,
+            "trace": res.trace,
         })
 
     if st.session_state.chat and st.button("Clear conversation"):

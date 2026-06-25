@@ -37,3 +37,6 @@ Thumbs.db
 # runs out of the box (Database + Get a Quote tabs work with no extra steps).
 # If you'd rather ship a "rebuild from source" repo, add them here and commit
 # the source PDF instead.
+
+# Runtime audit-trail log
+data/traces.jsonl

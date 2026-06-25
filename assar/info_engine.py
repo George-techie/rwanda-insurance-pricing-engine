@@ -188,23 +188,28 @@ class _Catalog:
 _CATALOG = _Catalog()
 
 
-def match_table(query: str, context: str = "") -> str | None:
-    """Match a request to a table, current query FIRST.
+def match_table_scored(query: str, context: str = "") -> tuple[str | None, float]:
+    """Match a request to a table, current query FIRST; also return the score.
 
     If the current query itself names a cover (lexical overlap with a table) and
     matches confidently, that wins outright; conversation `context` is ignored.
     This stops a prior turn (a greeting that lists every class, or a previously
     rendered table) from overriding an explicit request like 'a table of fire
     rates'. Only a subjectless follow-up ('a table of the options I have') falls
-    back to query + context."""
+    back to query + context. The score is returned so a trace can record why a
+    given table won."""
     name_q, score_q, overlap_q = _CATALOG.best(query)
     if overlap_q >= 1 and score_q >= MATCH_MIN:
-        return name_q
+        return name_q, score_q
     if context.strip():
         name_c, score_c, _ = _CATALOG.best(f"{query} {context}")
         if score_c >= MATCH_MIN:
-            return name_c
-    return name_q if score_q >= MATCH_MIN else None
+            return name_c, score_c
+    return (name_q, score_q) if score_q >= MATCH_MIN else (None, score_q)
+
+
+def match_table(query: str, context: str = "") -> str | None:
+    return match_table_scored(query, context)[0]
 
 
 def _fmt(value) -> str:

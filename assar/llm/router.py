@@ -18,9 +18,11 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from ..info_engine import catalog_titles, match_table, render_markdown
+from ..info_engine import catalog_titles, match_table_scored, render_markdown
 from ..pricing.registry import TOOL_SCHEMAS, run_tool
 from ..rag.retriever import get_retriever
+from ..tenancy import current_insurer
+from ..trace import Trace
 from .client import get_client
 
 # A quote needs a figure (sum insured / limit / value) or an explicit pricing
@@ -236,6 +238,7 @@ class RouterResult:
     retrieved: list[dict] = field(default_factory=list)    # [{text, page, score}]
     backend: str = ""
     error: str | None = None
+    trace: object | None = None                            # assar.trace.Trace
 
 
 def _format_context(chunks: list[dict]) -> str:
@@ -264,6 +267,7 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
     # answers AND gives the anti-fabrication guard a reference for the numbers in
     # the final answer, including on quote turns.
     retrieved: list[dict] = []
+    retr_err = None
     if retriever.available:
         try:
             retrieved = retriever.search(_retrieval_query(query, history), k=k)
@@ -274,23 +278,36 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
             # re-run `python -m assar.rag.ingest` after changing it.)
             import sys
             print(f"[router] retrieval failed: {exc}", file=sys.stderr)
+            retr_err = str(exc)
             retrieved = []
     client = get_client()
     result = RouterResult(answer="", retrieved=retrieved, backend=client.config.backend)
+
+    # Audit trail: record the observable decisions of this turn (see assar.trace).
+    tr = Trace(query=query, insurer_id=current_insurer(), backend=client.config.backend)
+    result.trace = tr
+    tr.add("retrieval", query=_retrieval_query(query, history), n=len(retrieved),
+           hits=[{"page": c.get("page"), "section": c.get("section", ""),
+                  "score": round(float(c.get("score", 0)), 3)} for c in retrieved],
+           error=retr_err)
+    tr.add("route", offer_tools=offer, wants_table=_wants_table(query))
 
     # Table / comparison request -> match it (with recent context) to one of the
     # manual's tables and render it deterministically. No LLM, no fabrication;
     # works even with no LLM configured.
     if _wants_table(query):
-        table = match_table(query, _table_context(history))
+        table, score = match_table_scored(query, _table_context(history))
         rendered = render_markdown(table) if table else None
+        tr.add("table_match", table=table, score=round(float(score), 3), rendered=bool(rendered))
         if rendered:
             result.answer = rendered
+            tr.add("final", source="table")
             return result
         result.answer = (
             "I can show a comparison table for any cover in the manual. Which one? "
             "For example: " + ", ".join(catalog_titles(10)) + "."
         )
+        tr.add("final", source="table_ask")
         return result
 
     if not client.ready:
@@ -308,6 +325,7 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
                 "`python -m assar.ingest`."
             )
         result.error = "llm_not_ready"
+        tr.add("final", source="no_llm")
         return result
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -343,7 +361,11 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
             "I couldn't process that one cleanly just now. Please rephrase it, or "
             "use the Get a Quote tab for an exact premium."
         )
+        tr.add("llm", stage="primary", ok=False, error=str(last_exc))
+        tr.add("final", source="llm_error")
         return result
+    tr.add("llm", stage="primary", ok=True, offered_tools=bool(tools),
+           emitted_tool_calls=len(getattr(msg, "tool_calls", None) or []))
 
     # Execute any tool calls deterministically.
     tool_messages = []
@@ -375,6 +397,11 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
                 {"role": "tool", "tool_call_id": tc.id, "content": json.dumps(quote)}
             )
         messages.extend(tool_messages)
+        tr.add("tools", calls=[{"name": t["name"], "args": t["args"],
+                                "ok": "error" not in t["result"],
+                                "rate": t["result"].get("rate"),
+                                "final_premium": t["result"].get("final_premium")}
+                               for t in result.tool_calls])
 
         # Backstop: a diamond/gold/jewellery item is high-value burglary cover,
         # not computer or plate-glass cover. If the model routed such an item to
@@ -402,6 +429,8 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
                             result.retrieved = retriever.search("burglary and theft insurance", k=3)
                         except Exception:  # noqa: BLE001
                             pass
+                    tr.add("backstop", kind="valuables_to_burglary", sum_insured=si)
+                    tr.add("final", source="valuables_backstop")
                     return result
 
         # Safeguard: if the user never supplied a figure, the tool's sum insured
@@ -422,16 +451,20 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
                     f"limit of indemnity) and I'll calculate the premium."
                 )
                 result.tool_calls = []   # drop the assumed-value premium
+                tr.add("safeguard", kind="no_sum_insured", product=r["product"])
+                tr.add("final", source="rate_only")
                 return result
 
         # Second pass: synthesize a final answer from the tool results + prose.
         try:
             final = client.chat(messages, tools=None, temperature=0.0)
             result.answer = final.content or ""
+            tr.add("llm", stage="synthesis", ok=True)
         except Exception as exc:  # noqa: BLE001
             result.error = f"Synthesis failed: {exc}"
             # Fall back to a plain rendering of the quote(s).
             result.answer = _render_quotes(result.tool_calls)
+            tr.add("llm", stage="synthesis", ok=False, error=str(exc))
     elif offer and retrieved:
         # We offered the pricing tools but the model declined to call one — it was
         # really an information question that merely mentioned a price word (e.g.
@@ -445,8 +478,10 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
                 tools=None, temperature=0.0,
             )
             result.answer = grounded.content or ""
+            tr.add("llm", stage="concept_fallback", ok=True)
         except Exception:  # noqa: BLE001
             result.answer = msg.content or ""
+            tr.add("llm", stage="concept_fallback", ok=False)
     else:
         result.answer = msg.content or ""
 
@@ -457,12 +492,17 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
     grounded_nums = _grounding_numbers(result.retrieved, result.tool_calls)
     fabricated = _has_ungrounded_figure(result.answer, grounded_nums)
     disclaims = bool(_NO_ACCESS.search(result.answer)) and bool(result.retrieved)
+    tr.add("grounding_guard", claimed=_claimed_amounts(result.answer),
+           grounded_n=len(grounded_nums), fired=bool(fabricated or disclaims))
     if fabricated or disclaims:
         # The answer asserted a figure not present in any tool result or excerpt,
         # or wrongly claimed it lacked the manual. Replace with a safe response.
         result.answer = _refusal(result.retrieved, result.tool_calls)
 
     result.answer = _strip_page_refs(result.answer)
+    tr.add("final", source=("refusal" if (fabricated or disclaims)
+                            else ("quote" if result.tool_calls else "concept")),
+           chars=len(result.answer))
     return result
 
 
