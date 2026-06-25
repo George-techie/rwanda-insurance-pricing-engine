@@ -502,4 +502,64 @@ Every calculator is assembled from a few primitives.
 
 ---
 
+## 11. Security: the Model Never Writes SQL
+
+A common but dangerous pattern in AI data assistants is text-to-SQL: the language
+model writes raw SQL from the user's words and that SQL is executed against the
+database. This approach is vulnerable in ways that cannot be fixed at the prompt
+level. A crafted message can steer the model into destructive statements such as
+DROP TABLE or UPDATE rates to zero. On a multi-insurer platform it can also cross
+authorization boundaries, for example returning one insurer's private rate
+overrides to another. System-prompt instructions such as "never write
+destructive SQL" are advisory, not enforceable, and prompt-injection attacks are
+designed to override them. A read-only database user blocks the writes but does
+not stop a read from crossing a tenant boundary, because read-only is not the
+same as authorized.
+
+This system does not use that pattern. The model never composes or executes SQL.
+Its only job on a pricing turn is to read the request and fill the typed
+parameters of a pre-defined tool; our code runs the database access. There are
+three controlled surfaces, and SQL is confined to code we wrote.
+
+First, the pricing tools. The chat exposes the calculators through typed tool
+schemas (the 21 functions in registry.py), each with named, typed parameters: a
+sum insured is a number, a cover is drawn from a fixed list, and so on. The
+dispatcher run_tool validates and coerces the arguments, drops any argument a
+calculator does not accept, and calls the deterministic Python function. Those
+functions read rates with bound SQL parameters and fixed identifier whitelists
+(the column is chosen from a known set, never built from user text), so even our
+own queries are not assembled by string-concatenating user input. The model
+supplies values, not SQL.
+
+Second, the comparison tables. A request for a table is matched to one of the
+manual's tables by name, and that name is validated against the database's actual
+table list before anything runs. The render is a fixed read against that
+whitelisted table. The model selects which table, never how to query it.
+
+Third, the database browser. The only place SQL is typed is the Database tab,
+where a human, not the model, types it. That path uses a genuinely read-only
+SQLite connection (opened in mode=ro), allows only a single SELECT or WITH
+statement, rejects multiple statements, and blocks write and DDL keywords
+(insert, update, delete, drop, alter, create, attach, detach, pragma, replace,
+vacuum). The model is not in this loop at all.
+
+Reinforcing all three, the grounding guard ensures no rate, percentage, or amount
+reaches the user unless it came from a tool result or a retrieved manual excerpt,
+so the model cannot present a number it invented even in prose.
+
+This is the same separation that the Model Context Protocol (MCP) formalizes: the
+intelligence stays with the model, which chooses a tool and fills its parameters,
+while access control stays on the server, which owns the query. Each typed tool
+here is already the natural unit to publish as an MCP tool or a thin endpoint
+wrapper, with no change to the security model.
+
+The current prototype prices the single shared ASSAR approved schedule, so it has
+no tenant isolation yet. Multi-insurer tenancy and authorization, in particular
+per-insurer rate overrides scoped to the authenticated insurer, are the planned
+next step, and the tool-and-endpoint design above is exactly what makes that
+enforceable: every tool call can be bound to the caller's identity on the server,
+which model-written SQL could never guarantee.
+
+---
+
 End of report.
