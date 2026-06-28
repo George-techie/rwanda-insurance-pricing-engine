@@ -447,9 +447,15 @@ for _t in TOOL_SCHEMAS + [COVERSOKO_TOOL]:
 
 
 def get_tool_schemas() -> list[dict]:
-    """Tools offered to the LLM: the local ASSAR calculators, plus the CoverSoko
-    property tool when the underwriting backend is configured."""
-    return TOOL_SCHEMAS + ([COVERSOKO_TOOL] if coversoko.enabled() else [])
+    """Tools offered to the LLM. With no CoverSoko backend, the local ASSAR
+    calculators. With a backend configured, CoverSoko is the PRIMARY pricing
+    engine for property/fire, so the overlapping local `quote_fire` is hidden
+    from the model (it is kept only for the offline fallback inside
+    quote_property); the other local calculators remain."""
+    if not coversoko.enabled():
+        return TOOL_SCHEMAS
+    local = [t for t in TOOL_SCHEMAS if t["function"]["name"] != "quote_fire"]
+    return local + [COVERSOKO_TOOL]
 
 
 _TRUE = {"true", "yes"}
@@ -480,15 +486,42 @@ def _coerce_numbers(args: dict) -> dict:
     return out
 
 
+def _local_property_fallback(perilType, sumInsured, attributes, include_all_special_perils):
+    """Offline fallback: price property/fire with the local ASSAR calculator when
+    the CoverSoko engine is down. Only fire/allied-perils maps cleanly."""
+    if "fire" not in (perilType or "").lower():
+        return None
+    category = (attributes or {}).get("propertyCategory") or ""
+    if not category:
+        return None
+    try:
+        q = quote_fire(category, float(sumInsured),
+                       special_perils=bool(include_all_special_perils)).as_dict()
+    except Exception:  # noqa: BLE001
+        return None
+    q["source"] = "local_fallback"
+    q["warnings"] = (["CoverSoko engine unavailable; priced with the local ASSAR "
+                      "calculator as a fallback (verify against the engine)."]
+                     + q.get("warnings", []))
+    return q
+
+
 def _quote_property(perilType, sumInsured, coverType, attributes,
                     specialPerilNames=None, includeAllSpecialPerils=False):
-    """Bridge the LLM's CoverSoko tool call to the HTTP client. The tenant
-    (ownerId) is taken from config inside the client, never from the model."""
-    return coversoko.quote(
+    """Bridge the LLM's CoverSoko tool call to the HTTP client (the PRIMARY path).
+    The tenant (ownerId) is taken from config inside the client, never from the
+    model. If the engine is unreachable, fall back to the local calculator."""
+    res = coversoko.quote(
         perilType, sumInsured, coverType, attributes,
         special_peril_names=specialPerilNames,
         include_all_special_perils=bool(includeAllSpecialPerils),
     )
+    if isinstance(res, dict) and "error" in res and "unreachable" in str(res["error"]).lower():
+        fb = _local_property_fallback(perilType, sumInsured, attributes,
+                                      bool(includeAllSpecialPerils))
+        if fb is not None:
+            return fb
+    return res
 
 
 # name in schema -> python callable
