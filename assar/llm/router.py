@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass, field
 
 from ..info_engine import catalog_titles, match_table_scored, render_markdown
-from ..pricing.registry import TOOL_SCHEMAS, run_tool
+from ..pricing.registry import get_tool_schemas, run_tool
 from ..rag.retriever import get_retriever
 from ..tenancy import current_insurer
 from ..trace import Trace
@@ -373,7 +373,7 @@ def answer_query(query: str, k: int = 4, history: list[tuple[str, str]] | None =
         user_content = _CONCEPT_INSTR.format(context=context, query=query)
     messages.append({"role": "user", "content": user_content})
 
-    tools = TOOL_SCHEMAS if offer else None
+    tools = get_tool_schemas() if offer else None
     slim = [messages[0], messages[-1]]   # system + user only: the fallback if too big
     msg = None
     last_exc = None

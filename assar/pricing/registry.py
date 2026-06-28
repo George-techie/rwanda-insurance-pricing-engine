@@ -9,6 +9,7 @@ from __future__ import annotations
 import inspect
 import re
 
+from ..integrations import coversoko
 from .base import list_categories
 from .fire import quote_burglary, quote_consequential_loss, quote_fire
 from .products import (
@@ -410,14 +411,45 @@ TOOL_SCHEMAS = [
     },
 ]
 
+# CoverSoko underwriting-engine tool. Exposed only when the backend is configured
+# (COVERSOKO_API_URL set), so default/offline behaviour is unchanged. Note: the
+# tenant (ownerId) is NOT a model parameter; it is set server-side from config.
+COVERSOKO_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "quote_property",
+        "description": "Calculate a property insurance premium via the CoverSoko "
+                       "underwriting engine (rules + classification + special perils). "
+                       "Use for property/fire-type risks when CoverSoko is available.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "perilType": {"type": "string", "description": "e.g. 'Fire_Allied_Perils'."},
+                "sumInsured": {"type": "number"},
+                "coverType": {"type": "string", "description": "Rate key in the classification, e.g. 'standardFireRate'."},
+                "attributes": {"type": "object", "description": "Risk attributes, e.g. {\"propertyType\": \"commercial\", \"propertyCategory\": \"Banks\"}."},
+                "specialPerilNames": {"type": "array", "items": {"type": "string"}},
+                "includeAllSpecialPerils": {"type": "boolean"},
+            },
+            "required": ["perilType", "sumInsured", "coverType", "attributes"],
+        },
+    },
+}
+
 # Groq/Llama sometimes emit numeric AND boolean args as JSON strings ("1000000",
 # "true"), which the provider then rejects against a strict {"type":"number"} or
 # {"type":"boolean"} schema (400 tool_use_failed). Relax those fields to accept
 # the type OR string; we coerce back to real values in run_tool().
-for _t in TOOL_SCHEMAS:
+for _t in TOOL_SCHEMAS + [COVERSOKO_TOOL]:
     for _p in _t["function"]["parameters"]["properties"].values():
         if _p.get("type") in ("number", "integer", "boolean"):
             _p["type"] = [_p["type"], "string"]
+
+
+def get_tool_schemas() -> list[dict]:
+    """Tools offered to the LLM: the local ASSAR calculators, plus the CoverSoko
+    property tool when the underwriting backend is configured."""
+    return TOOL_SCHEMAS + ([COVERSOKO_TOOL] if coversoko.enabled() else [])
 
 
 _TRUE = {"true", "yes"}
@@ -448,9 +480,21 @@ def _coerce_numbers(args: dict) -> dict:
     return out
 
 
+def _quote_property(perilType, sumInsured, coverType, attributes,
+                    specialPerilNames=None, includeAllSpecialPerils=False):
+    """Bridge the LLM's CoverSoko tool call to the HTTP client. The tenant
+    (ownerId) is taken from config inside the client, never from the model."""
+    return coversoko.quote(
+        perilType, sumInsured, coverType, attributes,
+        special_peril_names=specialPerilNames,
+        include_all_special_perils=bool(includeAllSpecialPerils),
+    )
+
+
 # name in schema -> python callable
 DISPATCH = {
     "quote_fire": quote_fire,
+    "quote_property": _quote_property,
     "quote_liability": quote_liability,
     "quote_git": quote_git,
     "quote_pvt": quote_pvt,
@@ -486,7 +530,9 @@ def run_tool(name: str, args: dict) -> dict:
     if not any(p.kind == p.VAR_KEYWORD for p in params.values()):
         args = {k: v for k, v in args.items() if k in params}
     try:
-        return fn(**args).as_dict()
+        result = fn(**args)
+        # Local calculators return a Quote; the CoverSoko bridge returns a dict.
+        return result.as_dict() if hasattr(result, "as_dict") else result
     except Exception as exc:  # surfaced back to the LLM as a tool result
         return {"error": str(exc)}
 
